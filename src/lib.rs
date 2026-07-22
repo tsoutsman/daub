@@ -1,14 +1,21 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+#![expect(dead_code, reason = "TODO: crate is wip")]
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+use bytemuck as _;
+use derive_setters as _;
+#[cfg(feature = "text")]
+use glyphon as _;
+use wgpu as _;
+#[cfg(feature = "winit")]
+use winit as _;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub mod color;
+pub mod geometry;
+pub mod layer;
+pub mod primitive;
+pub mod render;
+
+pub use layer::Layer;
+pub use render::{
+    PreparedFrame, Primitive, PrimitiveRenderer, RenderPipelineCache, Renderer, RendererConfig,
+    VertexWriter, Viewport,
+};

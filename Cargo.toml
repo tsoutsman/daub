@@ -4,5 +4,66 @@ version = "0.1.0"
 edition = "2024"
 description = "A lightweight 2D drawing library built on top of wgpu"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/tsoutsman/daub"
+readme = "README.md"
+keywords = ["wgpu"]
+categories = ["rendering::engine"]
 
 [dependencies]
+bytemuck = "=1.25.2"
+derive_setters = "=0.1.9"
+glyphon = { version = "=0.12.0", optional = true }
+winit = { version = "=0.30.13", optional = true }
+wgpu = "=30.0.0"
+
+[features]
+text = ["dep:glyphon"]
+winit = ["dep:winit"]
+
+default = []
+
+[lints.rust]
+meta_variable_misuse = "warn"
+
+missing_debug_implementations = "warn"
+# TODO: enable fully once the public API is ready
+missing_docs = "allow"
+
+non_ascii_idents = "deny"
+
+unreachable_pub = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+
+unused_crate_dependencies = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+multiple_crate_versions = "allow"
+
+# Lint suppressions
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+
+# Ownership and strings
+clone_on_ref_ptr = "warn"
+rc_buffer = "warn"
+str_to_string = "warn"
+
+# Debug and terminal output
+dbg_macro = "warn"
+print_stderr = "warn"
+print_stdout = "warn"
+
+# Panics and unfinished code
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+unreachable = "warn"
+unwrap_used = "warn"
+
+# Unsafe code
+undocumented_unsafe_blocks = "warn"
