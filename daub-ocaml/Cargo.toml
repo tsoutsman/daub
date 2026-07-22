@@ -1,0 +1,20 @@
+[package]
+name = "daub-ocaml"
+version = "0.1.0"
+edition = "2024"
+description = "OCaml bindings for Daub"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tsoutsman/daub"
+readme = "README.md"
+keywords = ["ocaml", "wgpu"]
+categories = ["api-bindings", "rendering::engine"]
+
+[lib]
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+daub = { path = "../daub", features = ["ocaml", "winit"] }
+ocaml.workspace = true
+
+[lints]
+workspace = true

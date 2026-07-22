@@ -1,0 +1,24 @@
+(rule
+ (targets libdaub_ocaml.a)
+ (deps
+  (source_tree ../../daub)
+  ../Cargo.toml
+  lib.rs
+  ../../Cargo.lock
+  ../../Cargo.toml)
+ (action
+  (progn
+   (run
+    cargo build
+    --manifest-path ../../Cargo.toml
+    --package daub-ocaml
+    --release
+    --target-dir ../../target)
+   (run cp ../../target/release/libdaub_ocaml.a libdaub_ocaml.a))))
+
+(library
+ (name daub)
+ (public_name daub)
+ (modules daub)
+ (modes native)
+ (foreign_archives daub_ocaml))

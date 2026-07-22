@@ -17,6 +17,7 @@ use crate::{
 };
 
 /// Controls when another frame is requested after rendering.
+#[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RedrawMode {
     /// Render only for the initial frame, resizing, or an explicit
@@ -28,6 +29,7 @@ pub enum RedrawMode {
 }
 
 /// An action requested in response to a window event.
+#[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventAction {
     #[default]

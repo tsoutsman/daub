@@ -1,6 +1,9 @@
 [workspace]
-members = ["daub"]
+members = ["daub", "daub-ocaml"]
 resolver = "3"
+
+[workspace.dependencies]
+ocaml = "=1.3.0"
 
 [workspace.lints.rust]
 meta_variable_misuse = "warn"

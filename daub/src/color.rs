@@ -1,4 +1,5 @@
 /// An RGBA color with floating-point components.
+#[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
     pub red: f32,
