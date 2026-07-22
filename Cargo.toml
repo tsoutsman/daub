@@ -1,0 +1,8 @@
+[package]
+name = "daub"
+version = "0.1.0"
+edition = "2024"
+description = "A lightweight 2D drawing library built on top of wgpu"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
