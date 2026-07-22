@@ -135,7 +135,11 @@ impl Frame<'_> {
     ///
     /// Consuming the frame prevents the renderer's shared vertex data from
     /// being prepared more than once before submission.
-    pub fn render(self, scenes: &[Scene]) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a primitive batch cannot be prepared or rendered.
+    pub fn render(self, scenes: &[Scene]) -> crate::render::Result<()> {
         let Self {
             device,
             queue,
@@ -148,7 +152,7 @@ impl Frame<'_> {
             ..
         } = self;
 
-        let mut prepared = renderer.prepare(viewport, scenes);
+        let mut prepared = renderer.prepare(viewport, scenes)?;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("daub frame encoder"),
         });
@@ -176,11 +180,12 @@ impl Frame<'_> {
                 color_attachments: &color_attachments,
                 ..Default::default()
             });
-            prepared.render(&mut render_pass);
+            prepared.render(&mut render_pass)?;
         }
 
         queue.submit([encoder.finish()]);
         queue.present(surface_texture);
+        Ok(())
     }
 }
 

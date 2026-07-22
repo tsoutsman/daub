@@ -206,6 +206,7 @@ pub(crate) trait ErasedBatch: Any {
     fn create_renderer(
         &self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         config: &RendererConfig,
         pipeline_cache: &mut RenderPipelineCache,
     ) -> Box<dyn ErasedPrimitiveRenderer>;
@@ -234,10 +235,11 @@ where
     fn create_renderer(
         &self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         config: &RendererConfig,
         pipeline_cache: &mut RenderPipelineCache,
     ) -> Box<dyn ErasedPrimitiveRenderer> {
-        Box::new(P::Renderer::new(device, config, pipeline_cache))
+        Box::new(P::Renderer::new(device, queue, config, pipeline_cache))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -276,8 +278,8 @@ mod tests {
     struct PrimitiveA(u32);
     struct PrimitiveB;
 
-    struct RendererA(wgpu::RenderPipeline);
-    struct RendererB(wgpu::RenderPipeline);
+    struct RendererA;
+    struct RendererB;
 
     impl Primitive for PrimitiveA {
         type Renderer = RendererA;
@@ -291,19 +293,12 @@ mod tests {
         type Primitive = PrimitiveA;
 
         fn new(
-            device: &wgpu::Device,
-            config: &RendererConfig,
-            cache: &mut RenderPipelineCache,
+            _: &wgpu::Device,
+            _: &wgpu::Queue,
+            _: &RendererConfig,
+            _: &mut RenderPipelineCache,
         ) -> Self {
-            Self(cache.get_or_create::<Self>(device, config))
-        }
-
-        fn build_pipeline(_: &wgpu::Device, _: &RendererConfig) -> wgpu::RenderPipeline {
-            std::process::abort()
-        }
-
-        fn render_pipeline(&self) -> &wgpu::RenderPipeline {
-            &self.0
+            Self
         }
 
         fn render_batch(
@@ -311,7 +306,8 @@ mod tests {
             _: &[Self::Primitive],
             _: &mut wgpu::RenderPass<'_>,
             _: Option<wgpu::BufferSlice<'_>>,
-        ) {
+        ) -> Result<(), crate::render::PrimitiveRendererError> {
+            Ok(())
         }
     }
 
@@ -319,19 +315,12 @@ mod tests {
         type Primitive = PrimitiveB;
 
         fn new(
-            device: &wgpu::Device,
-            config: &RendererConfig,
-            cache: &mut RenderPipelineCache,
+            _: &wgpu::Device,
+            _: &wgpu::Queue,
+            _: &RendererConfig,
+            _: &mut RenderPipelineCache,
         ) -> Self {
-            Self(cache.get_or_create::<Self>(device, config))
-        }
-
-        fn build_pipeline(_: &wgpu::Device, _: &RendererConfig) -> wgpu::RenderPipeline {
-            std::process::abort()
-        }
-
-        fn render_pipeline(&self) -> &wgpu::RenderPipeline {
-            &self.0
+            Self
         }
 
         fn render_batch(
@@ -339,7 +328,8 @@ mod tests {
             _: &[Self::Primitive],
             _: &mut wgpu::RenderPass<'_>,
             _: Option<wgpu::BufferSlice<'_>>,
-        ) {
+        ) -> Result<(), crate::render::PrimitiveRendererError> {
+            Ok(())
         }
     }
 

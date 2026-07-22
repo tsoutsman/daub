@@ -26,7 +26,8 @@ impl daub::winit::Application for Example {
             border: Border::new(Color::BLACK, LayoutValue::pixels(5.)),
             corner_radii: CornerRadii::uniform(LayoutValue::pixels(3.)),
         });
-        frame.render(&[scene]);
+        let result = frame.render(&[scene]);
+        assert!(result.is_ok(), "{result:?}");
     }
 }
 

@@ -1,4 +1,4 @@
-// Instanced quad shader.
+// Daub instanced quad shader.
 //
 // - Draw with triangle-list topology and six vertices per instance.
 // - `size_pixels`, `corner_radii_pixels`, and `border_width_pixels` are in

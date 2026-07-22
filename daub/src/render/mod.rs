@@ -1,7 +1,7 @@
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
-    fmt,
+    error, fmt,
     ops::Range,
 };
 
@@ -13,6 +13,66 @@ use crate::{
 /// A value that can be submitted to a [`Scene`].
 pub trait Primitive: 'static {
     type Renderer: PrimitiveRenderer<Primitive = Self>;
+}
+
+/// The error type returned by a concrete primitive renderer.
+pub type PrimitiveRendererError = Box<dyn error::Error + Send + Sync + 'static>;
+
+/// A result returned by the rendering API.
+pub type Result<T> = ::std::result::Result<T, Error>;
+
+/// The operation a primitive renderer was performing when it failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RenderStage {
+    Prepare,
+    Render,
+}
+
+/// An error produced while preparing or rendering a primitive batch.
+#[derive(Debug)]
+pub struct Error {
+    stage: RenderStage,
+    renderer: &'static str,
+    source: PrimitiveRendererError,
+}
+
+impl Error {
+    fn new<R>(stage: RenderStage, source: PrimitiveRendererError) -> Self
+    where
+        R: PrimitiveRenderer,
+    {
+        Self {
+            stage,
+            renderer: std::any::type_name::<R>(),
+            source,
+        }
+    }
+
+    #[must_use]
+    pub const fn stage(&self) -> RenderStage {
+        self.stage
+    }
+
+    #[must_use]
+    pub const fn renderer(&self) -> &'static str {
+        self.renderer
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "primitive renderer {} failed during {:?}: {}",
+            self.renderer, self.stage, self.source
+        )
+    }
+}
+
+impl error::Error for Error {
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        Some(self.source.as_ref())
+    }
 }
 
 /// Configuration that affects render-pipeline compatibility.
@@ -96,6 +156,69 @@ impl Viewport {
         let height = ndc_size_axis(height, f64::from(self.physical_height));
         [width, height]
     }
+
+    /// Resolves an anchored rectangle into physical-pixel coordinates.
+    ///
+    /// Returns `None` when the rectangle contains a non-finite position, size,
+    /// or anchor component. Negative dimensions are clamped to zero.
+    #[must_use]
+    pub fn resolve_rectangle(self, rectangle: Rectangle) -> Option<ResolvedRectangle> {
+        let width = self.resolve_x(rectangle.size.width);
+        let height = self.resolve_y(rectangle.size.height);
+        let position_x = self.resolve_x(rectangle.position.x);
+        let position_y = self.resolve_y(rectangle.position.y);
+
+        if ![
+            width,
+            height,
+            position_x,
+            position_y,
+            rectangle.anchor.x,
+            rectangle.anchor.y,
+        ]
+        .into_iter()
+        .all(f64::is_finite)
+        {
+            return None;
+        }
+
+        let width = width.max(0.0);
+        let height = height.max(0.0);
+
+        Some(ResolvedRectangle {
+            left: position_x - rectangle.anchor.x * width,
+            top: position_y - rectangle.anchor.y * height,
+            width,
+            height,
+        })
+    }
+}
+
+/// An axis-aligned rectangle resolved into physical-pixel coordinates.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub struct ResolvedRectangle {
+    /// The physical-pixel coordinate of the left edge.
+    pub left: f64,
+    /// The physical-pixel coordinate of the top edge.
+    pub top: f64,
+    /// The width in physical pixels.
+    pub width: f64,
+    /// The height in physical pixels.
+    pub height: f64,
+}
+
+impl ResolvedRectangle {
+    /// Returns the physical-pixel coordinate of the right edge.
+    #[must_use]
+    pub const fn right(self) -> f64 {
+        self.left + self.width
+    }
+
+    /// Returns the physical-pixel coordinate of the bottom edge.
+    #[must_use]
+    pub const fn bottom(self) -> f64 {
+        self.top + self.height
+    }
 }
 
 fn ndc_position_axis(position: f64, viewport_extent: f64, invert: bool) -> f64 {
@@ -159,26 +282,19 @@ impl<'a> VertexWriter<'a> {
 
 /// Prepares and renders one concrete [`Primitive`] type.
 ///
-/// Each primitive renderer type owns exactly one render pipeline. A renderer
-/// may be called several times in one pass when batches of its primitive type
-/// are separated by other primitive types.
+/// A renderer may be called several times in one pass when batches of its
+/// primitive type are separated by other primitive types. Each renderer binds
+/// the pipelines and resources required by its batch in [`Self::render_batch`].
 pub trait PrimitiveRenderer: Sized + 'static {
     type Primitive: Primitive<Renderer = Self>;
 
     /// Creates the state owned by this primitive renderer.
     fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         config: &RendererConfig,
         pipeline_cache: &mut RenderPipelineCache,
     ) -> Self;
-
-    /// Builds the primitive renderer's pipeline when it is not already cached.
-    fn build_pipeline(device: &wgpu::Device, config: &RendererConfig) -> wgpu::RenderPipeline;
-
-    /// Returns the primitive renderer's cached pipeline.
-    ///
-    /// The engine binds this pipeline before calling [`Self::render_batch`].
-    fn render_pipeline(&self) -> &wgpu::RenderPipeline;
 
     /// Starts preparation for a frame.
     ///
@@ -194,6 +310,10 @@ pub trait PrimitiveRenderer: Sized + 'static {
     ///
     /// Renderers that manage their own GPU buffers can use the default empty
     /// implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the batch cannot be prepared for rendering.
     fn prepare_batch(
         &mut self,
         device: &wgpu::Device,
@@ -201,8 +321,9 @@ pub trait PrimitiveRenderer: Sized + 'static {
         viewport: Viewport,
         primitives: &[Self::Primitive],
         vertices: &mut VertexWriter<'_>,
-    ) {
+    ) -> ::std::result::Result<(), PrimitiveRendererError> {
         let _ = (device, queue, viewport, primitives, vertices);
+        Ok(())
     }
 
     /// Finishes preparation for a frame.
@@ -219,12 +340,16 @@ pub trait PrimitiveRenderer: Sized + 'static {
     ///
     /// `vertex_buffer` contains the bytes appended by [`Self::prepare_batch`]
     /// for this batch. It is `None` when preparation appended no bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the prepared batch cannot be recorded.
     fn render_batch(
         &mut self,
         primitives: &[Self::Primitive],
         render_pass: &mut wgpu::RenderPass<'_>,
         vertex_buffer: Option<wgpu::BufferSlice<'_>>,
-    );
+    ) -> ::std::result::Result<(), PrimitiveRendererError>;
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -240,15 +365,14 @@ impl RenderPipelineCache {
 
     pub fn get_or_create<R>(
         &mut self,
-        device: &wgpu::Device,
-        config: &RendererConfig,
+        build: impl FnOnce() -> wgpu::RenderPipeline,
     ) -> wgpu::RenderPipeline
     where
-        R: PrimitiveRenderer,
+        R: 'static,
     {
         self.pipelines
             .entry(TypeId::of::<R>())
-            .or_insert_with(|| R::build_pipeline(device, config))
+            .or_insert_with(build)
             .clone()
     }
 
@@ -307,12 +431,16 @@ impl Renderer {
     ///
     /// The returned frame borrows this renderer, preventing its shared buffers
     /// from being replaced until the frame has been rendered or dropped.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a primitive renderer cannot prepare one of its
+    /// batches.
     pub fn prepare<'renderer, 'scene>(
         &'renderer mut self,
         viewport: Viewport,
         scenes: &'scene [Scene],
-    ) -> PreparedFrame<'renderer, 'scene> {
+    ) -> Result<PreparedFrame<'renderer, 'scene>> {
         self.vertex_bytes.clear();
         let mut draws = Vec::new();
         let mut batches = Vec::new();
@@ -345,7 +473,7 @@ impl Renderer {
                 continue;
             };
             let mut vertices = VertexWriter::new(&mut self.vertex_bytes);
-            renderer.prepare_batch(&self.device, &self.queue, viewport, batch, &mut vertices);
+            renderer.prepare_batch(&self.device, &self.queue, viewport, batch, &mut vertices)?;
             let end = start + vertices.len() as wgpu::BufferAddress;
 
             draws.push(PreparedDraw {
@@ -363,17 +491,22 @@ impl Renderer {
         align_vec(&mut self.vertex_bytes);
         self.upload_vertices();
 
-        PreparedFrame {
+        Ok(PreparedFrame {
             renderer: self,
             draws,
-        }
+        })
     }
 
     fn ensure_primitive_renderer(&mut self, batch: &dyn ErasedBatch) {
         self.primitive_renderers
             .entry(batch.renderer_type_id())
             .or_insert_with(|| {
-                batch.create_renderer(&self.device, &self.config, &mut self.pipeline_cache)
+                batch.create_renderer(
+                    &self.device,
+                    &self.queue,
+                    &self.config,
+                    &mut self.pipeline_cache,
+                )
             });
     }
 
@@ -424,7 +557,11 @@ pub struct PreparedFrame<'renderer, 'scene> {
 
 impl PreparedFrame<'_, '_> {
     /// Records every prepared draw in scene and submission order.
-    pub fn render(&mut self, render_pass: &mut wgpu::RenderPass<'_>) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a primitive renderer cannot record its batch.
+    pub fn render(&mut self, render_pass: &mut wgpu::RenderPass<'_>) -> Result<()> {
         let Renderer {
             primitive_renderers,
             vertex_buffer,
@@ -443,15 +580,15 @@ impl PreparedFrame<'_, '_> {
                 draw.scissor.width,
                 draw.scissor.height,
             );
-            render_pass.set_pipeline(renderer.render_pipeline());
-
             let vertex_slice = draw.vertex_range.as_ref().and_then(|range| {
                 vertex_buffer
                     .as_ref()
                     .map(|buffer| buffer.slice(range.clone()))
             });
-            renderer.render_batch(draw.batch, render_pass, vertex_slice);
+            renderer.render_batch(draw.batch, render_pass, vertex_slice)?;
         }
+
+        Ok(())
     }
 
     #[must_use]
@@ -490,8 +627,6 @@ struct ScissorRect {
 }
 
 pub(crate) trait ErasedPrimitiveRenderer: Any {
-    fn render_pipeline(&self) -> &wgpu::RenderPipeline;
-
     fn start_prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, viewport: Viewport);
 
     fn prepare_batch(
@@ -501,7 +636,7 @@ pub(crate) trait ErasedPrimitiveRenderer: Any {
         viewport: Viewport,
         batch: &dyn ErasedBatch,
         vertices: &mut VertexWriter<'_>,
-    );
+    ) -> Result<()>;
 
     fn finish_prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue);
 
@@ -510,17 +645,13 @@ pub(crate) trait ErasedPrimitiveRenderer: Any {
         batch: &dyn ErasedBatch,
         render_pass: &mut wgpu::RenderPass<'_>,
         vertex_buffer: Option<wgpu::BufferSlice<'_>>,
-    );
+    ) -> Result<()>;
 }
 
 impl<R> ErasedPrimitiveRenderer for R
 where
     R: PrimitiveRenderer,
 {
-    fn render_pipeline(&self) -> &wgpu::RenderPipeline {
-        PrimitiveRenderer::render_pipeline(self)
-    }
-
     fn start_prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, viewport: Viewport) {
         PrimitiveRenderer::start_prepare(self, device, queue, viewport);
     }
@@ -532,9 +663,9 @@ where
         viewport: Viewport,
         batch: &dyn ErasedBatch,
         vertices: &mut VertexWriter<'_>,
-    ) {
+    ) -> Result<()> {
         let Some(batch) = typed_batch::<R>(batch) else {
-            return;
+            return Ok(());
         };
         PrimitiveRenderer::prepare_batch(
             self,
@@ -543,7 +674,8 @@ where
             viewport,
             batch.primitives(),
             vertices,
-        );
+        )
+        .map_err(|source| Error::new::<R>(RenderStage::Prepare, source))
     }
 
     fn finish_prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
@@ -555,11 +687,12 @@ where
         batch: &dyn ErasedBatch,
         render_pass: &mut wgpu::RenderPass<'_>,
         vertex_buffer: Option<wgpu::BufferSlice<'_>>,
-    ) {
+    ) -> Result<()> {
         let Some(batch) = typed_batch::<R>(batch) else {
-            return;
+            return Ok(());
         };
-        PrimitiveRenderer::render_batch(self, batch.primitives(), render_pass, vertex_buffer);
+        PrimitiveRenderer::render_batch(self, batch.primitives(), render_pass, vertex_buffer)
+            .map_err(|source| Error::new::<R>(RenderStage::Render, source))
     }
 }
 
@@ -590,24 +723,12 @@ fn align_vec(bytes: &mut Vec<u8>) {
 fn resolve_scissor(rectangle: Rectangle, viewport: Viewport) -> Option<ScissorRect> {
     let viewport_width = f64::from(viewport.physical_width);
     let viewport_height = f64::from(viewport.physical_height);
-    let width = viewport.resolve_x(rectangle.size.width);
-    let height = viewport.resolve_y(rectangle.size.height);
-    let position_x = viewport.resolve_x(rectangle.position.x);
-    let position_y = viewport.resolve_y(rectangle.position.y);
+    let resolved = viewport.resolve_rectangle(rectangle)?;
 
-    let left = position_x - rectangle.anchor.x * width;
-    let top = position_y - rectangle.anchor.y * height;
-    let right = left + width;
-    let bottom = top + height;
-
-    if ![left, top, right, bottom].into_iter().all(f64::is_finite) {
-        return None;
-    }
-
-    let left = left.clamp(0.0, viewport_width).floor();
-    let top = top.clamp(0.0, viewport_height).floor();
-    let right = right.clamp(0.0, viewport_width).ceil();
-    let bottom = bottom.clamp(0.0, viewport_height).ceil();
+    let left = resolved.left.clamp(0.0, viewport_width).floor();
+    let top = resolved.top.clamp(0.0, viewport_height).floor();
+    let right = resolved.right().clamp(0.0, viewport_width).ceil();
+    let bottom = resolved.bottom().clamp(0.0, viewport_height).ceil();
 
     if right <= left || bottom <= top {
         return None;

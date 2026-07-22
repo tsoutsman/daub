@@ -32,5 +32,9 @@ default = []
 name = "window"
 required-features = ["winit"]
 
+[[example]]
+name = "text"
+required-features = ["text", "winit"]
+
 [lints]
 workspace = true

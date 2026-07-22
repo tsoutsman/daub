@@ -1,139 +1,24 @@
 use bytemuck::{Pod, Zeroable};
-use derive_setters::Setters;
 
+use super::Quad;
 use crate::{
     color::Color,
-    geometry::{LayoutValue, Rectangle},
     render::{
-        Primitive, PrimitiveRenderer, RenderPipelineCache, RendererConfig, VertexWriter, Viewport,
+        PrimitiveRenderer, PrimitiveRendererError, RenderPipelineCache, RendererConfig,
+        VertexWriter, Viewport,
     },
 };
-
-/// The inside border of a [`Quad`].
-#[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Border {
-    pub color: Color,
-    pub width: LayoutValue,
-}
-
-impl Border {
-    pub const NONE: Self = Self {
-        color: Color::TRANSPARENT,
-        width: LayoutValue::ZERO,
-    };
-
-    #[must_use]
-    pub const fn new(color: Color, width: LayoutValue) -> Self {
-        Self { color, width }
-    }
-}
-
-impl Default for Border {
-    fn default() -> Self {
-        Self::NONE
-    }
-}
-
-/// Corner radii ordered by their named rectangle corners.
-#[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CornerRadii {
-    pub top_left: LayoutValue,
-    pub top_right: LayoutValue,
-    pub bottom_right: LayoutValue,
-    pub bottom_left: LayoutValue,
-}
-
-impl CornerRadii {
-    pub const ZERO: Self = Self::uniform(LayoutValue::ZERO);
-
-    #[must_use]
-    pub const fn uniform(radius: LayoutValue) -> Self {
-        Self {
-            top_left: radius,
-            top_right: radius,
-            bottom_right: radius,
-            bottom_left: radius,
-        }
-    }
-
-    #[must_use]
-    pub const fn new(
-        top_left: LayoutValue,
-        top_right: LayoutValue,
-        bottom_right: LayoutValue,
-        bottom_left: LayoutValue,
-    ) -> Self {
-        Self {
-            top_left,
-            top_right,
-            bottom_right,
-            bottom_left,
-        }
-    }
-}
-
-impl Default for CornerRadii {
-    fn default() -> Self {
-        Self::ZERO
-    }
-}
-
-/// A filled, optionally bordered axis-aligned rectangle.
-#[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
-#[derive(Debug, Clone, Copy, PartialEq, Setters)]
-pub struct Quad {
-    pub rectangle: Rectangle,
-    pub color: Color,
-    pub border: Border,
-    pub corner_radii: CornerRadii,
-}
-
-impl Quad {
-    #[must_use]
-    pub const fn new(rectangle: Rectangle, color: Color) -> Self {
-        Self {
-            rectangle,
-            color,
-            border: Border::NONE,
-            corner_radii: CornerRadii::ZERO,
-        }
-    }
-}
-
-impl Default for Quad {
-    fn default() -> Self {
-        Self::new(Rectangle::default(), Color::TRANSPARENT)
-    }
-}
-
-impl Primitive for Quad {
-    type Renderer = QuadRenderer;
-}
 
 #[derive(Debug)]
 pub struct QuadRenderer {
     pipeline: wgpu::RenderPipeline,
 }
 
-impl PrimitiveRenderer for QuadRenderer {
-    type Primitive = Quad;
-
-    fn new(
-        device: &wgpu::Device,
-        config: &RendererConfig,
-        pipeline_cache: &mut RenderPipelineCache,
-    ) -> Self {
-        Self {
-            pipeline: pipeline_cache.get_or_create::<Self>(device, config),
-        }
-    }
-
+impl QuadRenderer {
     fn build_pipeline(device: &wgpu::Device, config: &RendererConfig) -> wgpu::RenderPipeline {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("daub quad shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("quad.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("daub quad pipeline layout"),
@@ -174,9 +59,20 @@ impl PrimitiveRenderer for QuadRenderer {
             cache: None,
         })
     }
+}
 
-    fn render_pipeline(&self) -> &wgpu::RenderPipeline {
-        &self.pipeline
+impl PrimitiveRenderer for QuadRenderer {
+    type Primitive = Quad;
+
+    fn new(
+        device: &wgpu::Device,
+        _: &wgpu::Queue,
+        config: &RendererConfig,
+        pipeline_cache: &mut RenderPipelineCache,
+    ) -> Self {
+        Self {
+            pipeline: pipeline_cache.get_or_create::<Self>(|| Self::build_pipeline(device, config)),
+        }
     }
 
     fn prepare_batch(
@@ -186,11 +82,13 @@ impl PrimitiveRenderer for QuadRenderer {
         viewport: Viewport,
         primitives: &[Self::Primitive],
         vertices: &mut VertexWriter<'_>,
-    ) {
+    ) -> Result<(), PrimitiveRendererError> {
         for quad in primitives {
             let instance = QuadInstance::new(*quad, viewport);
             vertices.write(std::slice::from_ref(&instance));
         }
+
+        Ok(())
     }
 
     fn render_batch(
@@ -198,16 +96,18 @@ impl PrimitiveRenderer for QuadRenderer {
         primitives: &[Self::Primitive],
         render_pass: &mut wgpu::RenderPass<'_>,
         vertex_buffer: Option<wgpu::BufferSlice<'_>>,
-    ) {
+    ) -> Result<(), PrimitiveRendererError> {
         let Some(vertex_buffer) = vertex_buffer else {
-            return;
+            return Ok(());
         };
         let Ok(instance_count) = u32::try_from(primitives.len()) else {
-            return;
+            return Ok(());
         };
 
+        render_pass.set_pipeline(&self.pipeline);
         render_pass.set_vertex_buffer(0, vertex_buffer);
         render_pass.draw(0..4, 0..instance_count);
+        Ok(())
     }
 }
 
@@ -241,25 +141,23 @@ impl QuadInstance {
     };
 
     fn new(quad: Quad, viewport: Viewport) -> Self {
-        let width = viewport.resolve_x(quad.rectangle.size.width).max(0.0);
-        let height = viewport.resolve_y(quad.rectangle.size.height).max(0.0);
-        let position_x = viewport.resolve_x(quad.rectangle.position.x);
-        let position_y = viewport.resolve_y(quad.rectangle.position.y);
-
-        let left = position_x - quad.rectangle.anchor.x * width;
-        let top = position_y - quad.rectangle.anchor.y * height;
-        let center_x = left + width * 0.5;
-        let center_y = top + height * 0.5;
+        let rectangle = viewport
+            .resolve_rectangle(quad.rectangle)
+            .unwrap_or_default();
+        let center_x = rectangle.left + rectangle.width * 0.5;
+        let center_y = rectangle.top + rectangle.height * 0.5;
         let center_ndc = viewport.to_ndc_position(center_x, center_y).map(to_f32);
-        let size_ndc = viewport.to_ndc_size(width, height).map(to_f32);
-        let relative_radius = width.min(height);
+        let size_ndc = viewport
+            .to_ndc_size(rectangle.width, rectangle.height)
+            .map(to_f32);
+        let relative_radius = rectangle.width.min(rectangle.height);
 
         Self {
             color: color_components(quad.color),
             border_color: color_components(quad.border.color),
             center_ndc,
             size_ndc,
-            size_pixels: [to_f32(width), to_f32(height)],
+            size_pixels: [to_f32(rectangle.width), to_f32(rectangle.height)],
             corner_radii_pixels: [
                 to_f32(viewport.resolve(quad.corner_radii.top_left, relative_radius)),
                 to_f32(viewport.resolve(quad.corner_radii.top_right, relative_radius)),
@@ -289,35 +187,13 @@ fn to_f32(value: f64) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Border, CornerRadii, Quad, QuadInstance, QuadRenderer};
+    use super::{QuadInstance, QuadRenderer};
     use crate::{
         color::Color,
         geometry::{LayoutValue, Point, Rectangle, Size},
-        render::{PrimitiveRenderer, RendererConfig, Viewport},
+        primitive::{Border, CornerRadii, Quad},
+        render::{RendererConfig, Viewport},
     };
-
-    #[test]
-    fn new_quad_has_no_border_or_rounding() {
-        let rectangle = Rectangle::default();
-        let quad = Quad::new(rectangle, Color::WHITE);
-
-        assert_eq!(quad.rectangle, rectangle);
-        assert_eq!(quad.color, Color::WHITE);
-        assert_eq!(quad.border, Border::NONE);
-        assert_eq!(quad.corner_radii, CornerRadii::ZERO);
-    }
-
-    #[test]
-    fn builder_sets_appearance() {
-        let border = Border::new(Color::BLACK, LayoutValue::pixels(2.0));
-        let radius = LayoutValue::pixels(6.0);
-        let quad = Quad::new(Rectangle::default(), Color::WHITE)
-            .border(border)
-            .corner_radii(CornerRadii::uniform(radius));
-
-        assert_eq!(quad.border, border);
-        assert_eq!(quad.corner_radii, CornerRadii::uniform(radius));
-    }
 
     #[test]
     fn resolves_quad_instance_against_viewport() {
@@ -359,7 +235,7 @@ mod tests {
 
     #[test]
     fn shader_is_valid_wgsl() {
-        let parse_result = wgpu::naga::front::wgsl::parse_str(include_str!("quad.wgsl"));
+        let parse_result = wgpu::naga::front::wgsl::parse_str(include_str!("shader.wgsl"));
         let Ok(module) = parse_result else {
             std::process::abort();
         };
