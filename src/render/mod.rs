@@ -216,6 +216,7 @@ pub struct Renderer {
     config: RendererConfig,
     pipeline_cache: RenderPipelineCache,
     primitive_renderers: HashMap<TypeId, Box<dyn ErasedPrimitiveRenderer>>,
+    vertex_bytes: Vec<u8>,
     vertex_buffer: Option<wgpu::Buffer>,
     vertex_buffer_capacity: wgpu::BufferAddress,
 }
@@ -229,6 +230,7 @@ impl Renderer {
             config,
             pipeline_cache: RenderPipelineCache::new(),
             primitive_renderers: HashMap::new(),
+            vertex_bytes: Vec::new(),
             vertex_buffer: None,
             vertex_buffer_capacity: 0,
         }
@@ -249,7 +251,7 @@ impl Renderer {
         viewport: Viewport,
         layers: &'scene [Layer],
     ) -> PreparedFrame<'renderer, 'scene> {
-        let mut vertex_bytes = Vec::new();
+        self.vertex_bytes.clear();
         let mut draws = Vec::new();
         let mut batches = Vec::new();
 
@@ -273,14 +275,14 @@ impl Renderer {
         }
 
         for (batch, scissor) in batches {
-            align_vec(&mut vertex_bytes);
-            let start = vertex_bytes.len() as wgpu::BufferAddress;
+            align_vec(&mut self.vertex_bytes);
+            let start = self.vertex_bytes.len() as wgpu::BufferAddress;
 
             let renderer = self.primitive_renderers.get_mut(&batch.renderer_type_id());
             let Some(renderer) = renderer else {
                 continue;
             };
-            let mut vertices = VertexWriter::new(&mut vertex_bytes);
+            let mut vertices = VertexWriter::new(&mut self.vertex_bytes);
             renderer.prepare_batch(&self.device, &self.queue, viewport, batch, &mut vertices);
             let end = start + vertices.len() as wgpu::BufferAddress;
 
@@ -296,8 +298,8 @@ impl Renderer {
             renderer.finish_prepare(&self.device, &self.queue);
         }
 
-        align_vec(&mut vertex_bytes);
-        self.upload_vertices(&vertex_bytes);
+        align_vec(&mut self.vertex_bytes);
+        self.upload_vertices();
 
         PreparedFrame {
             renderer: self,
@@ -313,12 +315,12 @@ impl Renderer {
             });
     }
 
-    fn upload_vertices(&mut self, bytes: &[u8]) {
-        if bytes.is_empty() {
+    fn upload_vertices(&mut self) {
+        if self.vertex_bytes.is_empty() {
             return;
         }
 
-        let required = bytes.len() as wgpu::BufferAddress;
+        let required = self.vertex_bytes.len() as wgpu::BufferAddress;
         if required > self.vertex_buffer_capacity {
             let capacity = required.next_power_of_two();
             self.vertex_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -331,7 +333,7 @@ impl Renderer {
         }
 
         if let Some(buffer) = &self.vertex_buffer {
-            self.queue.write_buffer(buffer, 0, bytes);
+            self.queue.write_buffer(buffer, 0, &self.vertex_bytes);
         }
     }
 }
@@ -343,6 +345,7 @@ impl fmt::Debug for Renderer {
             .field("config", &self.config)
             .field("primitive_renderer_count", &self.primitive_renderers.len())
             .field("pipeline_count", &self.pipeline_cache.len())
+            .field("vertex_staging_capacity", &self.vertex_bytes.capacity())
             .field("vertex_buffer_capacity", &self.vertex_buffer_capacity)
             .finish_non_exhaustive()
     }
