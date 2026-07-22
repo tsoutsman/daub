@@ -194,6 +194,8 @@ impl fmt::Debug for Frame<'_> {
     }
 }
 
+pub type Result<T> = ::std::result::Result<T, Error>;
+
 /// An error produced while creating or running a windowed application.
 #[derive(Debug)]
 pub enum Error {
@@ -258,7 +260,7 @@ impl error::Error for Error {
 ///
 /// Returns an error if the window, event loop, surface, adapter, or device
 /// cannot be created, or if the requested surface configuration is unsupported.
-pub fn run<A>(settings: Settings) -> Result<(), Error>
+pub fn run<A>(settings: Settings) -> Result<()>
 where
     A: Application,
 {
@@ -417,7 +419,7 @@ impl<A> State<A>
 where
     A: Application,
 {
-    fn render(&mut self, clear_color: Color) -> Result<bool, Error> {
+    fn render(&mut self, clear_color: Color) -> Result<bool> {
         if !self.graphics.configured {
             return Ok(false);
         }
@@ -489,7 +491,7 @@ impl Graphics {
         window: Arc<Window>,
         event_loop: &::winit::event_loop::ActiveEventLoop,
         settings: &Settings,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle_from_env(
                 Box::new(event_loop.owned_display_handle()),
@@ -576,7 +578,7 @@ impl Graphics {
         self.configured = true;
     }
 
-    fn recreate_surface(&mut self) -> Result<(), Error> {
+    fn recreate_surface(&mut self) -> Result<()> {
         self.surface = self
             .instance
             .create_surface(Arc::clone(&self.window))
