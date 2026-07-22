@@ -15,12 +15,12 @@ use crate::{
 /// Consecutive primitives of the same type are stored together in a typed
 /// batch. Starting a batch for a different primitive type preserves submission
 /// order by creating a new batch.
-pub struct Layer {
+pub struct Scene {
     pub clip_bounds: Rectangle,
     batches: Vec<Box<dyn ErasedBatch>>,
 }
 
-impl Layer {
+impl Scene {
     #[must_use]
     pub const fn new(clip_bounds: Rectangle) -> Self {
         Self {
@@ -29,7 +29,7 @@ impl Layer {
         }
     }
 
-    /// Adds a primitive to the layer.
+    /// Adds a primitive to the scene.
     ///
     /// The primitive is appended to the last batch when its type matches.
     /// Otherwise, a new batch is started.
@@ -114,10 +114,10 @@ impl Layer {
     }
 }
 
-impl fmt::Debug for Layer {
+impl fmt::Debug for Scene {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("Layer")
+            .debug_struct("Scene")
             .field("clip_bounds", &self.clip_bounds)
             .field("len", &self.len())
             .field("batch_count", &self.batch_count())
@@ -267,7 +267,7 @@ impl dyn ErasedBatch + '_ {
 
 #[cfg(test)]
 mod tests {
-    use super::Layer;
+    use super::Scene;
     use crate::{
         geometry::Rectangle,
         render::{Primitive, PrimitiveRenderer, RenderPipelineCache, RendererConfig},
@@ -346,17 +346,17 @@ mod tests {
     #[test]
     fn groups_consecutive_primitives() {
         let bounds = Rectangle::default();
-        let mut layer = Layer::new(bounds);
+        let mut scene = Scene::new(bounds);
 
-        layer.push(PrimitiveA(1));
-        layer.push(PrimitiveA(2));
-        layer.push(PrimitiveB);
-        layer.push(PrimitiveB);
+        scene.push(PrimitiveA(1));
+        scene.push(PrimitiveA(2));
+        scene.push(PrimitiveB);
+        scene.push(PrimitiveB);
 
-        assert_eq!(layer.len(), 4);
-        assert_eq!(layer.batch_count(), 2);
+        assert_eq!(scene.len(), 4);
+        assert_eq!(scene.batch_count(), 2);
 
-        let batches = layer.batches().collect::<Vec<_>>();
+        let batches = scene.batches().collect::<Vec<_>>();
         let Some(first) = batches[0].downcast_ref::<PrimitiveA>() else {
             std::process::abort();
         };
@@ -369,16 +369,16 @@ mod tests {
     #[test]
     fn preserves_interleaved_submission_order() {
         let bounds = Rectangle::default();
-        let mut layer = Layer::new(bounds);
+        let mut scene = Scene::new(bounds);
 
-        layer.push(PrimitiveA(1));
-        layer.push(PrimitiveB);
-        layer.push(PrimitiveA(2));
+        scene.push(PrimitiveA(1));
+        scene.push(PrimitiveB);
+        scene.push(PrimitiveA(2));
 
-        assert_eq!(layer.len(), 3);
-        assert_eq!(layer.batch_count(), 3);
+        assert_eq!(scene.len(), 3);
+        assert_eq!(scene.batch_count(), 3);
 
-        let batches = layer.batches().collect::<Vec<_>>();
+        let batches = scene.batches().collect::<Vec<_>>();
         assert!(batches[0].downcast_ref::<PrimitiveA>().is_some());
         assert!(batches[1].downcast_ref::<PrimitiveB>().is_some());
         assert!(batches[2].downcast_ref::<PrimitiveA>().is_some());
@@ -386,11 +386,11 @@ mod tests {
 
     #[test]
     fn empty_extend_does_not_create_a_batch() {
-        let mut layer = Layer::new(Rectangle::default());
+        let mut scene = Scene::new(Rectangle::default());
 
-        layer.extend::<PrimitiveA, _>(std::iter::empty());
+        scene.extend::<PrimitiveA, _>(std::iter::empty());
 
-        assert!(layer.is_empty());
-        assert_eq!(layer.batch_count(), 0);
+        assert!(scene.is_empty());
+        assert_eq!(scene.batch_count(), 0);
     }
 }

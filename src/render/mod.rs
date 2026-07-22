@@ -7,10 +7,10 @@ use std::{
 
 use crate::{
     geometry::{LayoutValue, Rectangle},
-    layer::{ErasedBatch, Layer, TypedBatch},
+    scene::{ErasedBatch, Scene, TypedBatch},
 };
 
-/// A value that can be submitted to a [`Layer`].
+/// A value that can be submitted to a [`Scene`].
 pub trait Primitive: 'static {
     type Renderer: PrimitiveRenderer<Primitive = Self>;
 }
@@ -50,6 +50,68 @@ impl Viewport {
             physical_height,
             scale_factor,
         }
+    }
+
+    /// Resolves a layout value into physical pixels.
+    ///
+    /// `relative_to` is the physical-pixel extent represented by a relative
+    /// value of `1.0`.
+    #[must_use]
+    pub fn resolve(self, value: LayoutValue, relative_to: f64) -> f64 {
+        match value {
+            LayoutValue::Relative(value) => value * relative_to,
+            LayoutValue::LogicalPixels(value) => value * self.scale_factor,
+            LayoutValue::PhysicalPixels(value) => value,
+        }
+    }
+
+    /// Resolves a horizontal layout value into physical pixels.
+    #[must_use]
+    pub fn resolve_x(self, value: LayoutValue) -> f64 {
+        self.resolve(value, f64::from(self.physical_width))
+    }
+
+    /// Resolves a vertical layout value into physical pixels.
+    #[must_use]
+    pub fn resolve_y(self, value: LayoutValue) -> f64 {
+        self.resolve(value, f64::from(self.physical_height))
+    }
+
+    /// Converts a position in physical pixels to normalized device coordinates.
+    ///
+    /// Pixel positions use a top-left origin with Y increasing downwards. The
+    /// returned NDC position uses WGPU's Y-up convention.
+    #[must_use]
+    pub fn to_ndc_position(self, x: f64, y: f64) -> [f64; 2] {
+        let x = ndc_position_axis(x, f64::from(self.physical_width), false);
+        let y = ndc_position_axis(y, f64::from(self.physical_height), true);
+        [x, y]
+    }
+
+    /// Converts a size in physical pixels to a normalized device coordinate
+    /// size.
+    #[must_use]
+    pub fn to_ndc_size(self, width: f64, height: f64) -> [f64; 2] {
+        let width = ndc_size_axis(width, f64::from(self.physical_width));
+        let height = ndc_size_axis(height, f64::from(self.physical_height));
+        [width, height]
+    }
+}
+
+fn ndc_position_axis(position: f64, viewport_extent: f64, invert: bool) -> f64 {
+    if viewport_extent <= 0.0 {
+        return 0.0;
+    }
+
+    let ndc = position / viewport_extent * 2.0 - 1.0;
+    if invert { -ndc } else { ndc }
+}
+
+fn ndc_size_axis(size: f64, viewport_extent: f64) -> f64 {
+    if viewport_extent <= 0.0 {
+        0.0
+    } else {
+        size / viewport_extent * 2.0
     }
 }
 
@@ -249,18 +311,18 @@ impl Renderer {
     pub fn prepare<'renderer, 'scene>(
         &'renderer mut self,
         viewport: Viewport,
-        layers: &'scene [Layer],
+        scenes: &'scene [Scene],
     ) -> PreparedFrame<'renderer, 'scene> {
         self.vertex_bytes.clear();
         let mut draws = Vec::new();
         let mut batches = Vec::new();
 
-        for layer in layers {
-            let Some(scissor) = resolve_scissor(layer.clip_bounds, viewport) else {
+        for scene in scenes {
+            let Some(scissor) = resolve_scissor(scene.clip_bounds, viewport) else {
                 continue;
             };
 
-            for batch in layer.batches() {
+            for batch in scene.batches() {
                 if batch.is_empty() {
                     continue;
                 }
@@ -333,6 +395,7 @@ impl Renderer {
         }
 
         if let Some(buffer) = &self.vertex_buffer {
+            // TODO: use queue.write_buffer_with
             self.queue.write_buffer(buffer, 0, &self.vertex_bytes);
         }
     }
@@ -360,7 +423,7 @@ pub struct PreparedFrame<'renderer, 'scene> {
 }
 
 impl PreparedFrame<'_, '_> {
-    /// Records every prepared draw in layer and submission order.
+    /// Records every prepared draw in scene and submission order.
     pub fn render(&mut self, render_pass: &mut wgpu::RenderPass<'_>) {
         let Renderer {
             primitive_renderers,
@@ -527,14 +590,10 @@ fn align_vec(bytes: &mut Vec<u8>) {
 fn resolve_scissor(rectangle: Rectangle, viewport: Viewport) -> Option<ScissorRect> {
     let viewport_width = f64::from(viewport.physical_width);
     let viewport_height = f64::from(viewport.physical_height);
-    let width = resolve_value(rectangle.size.width, viewport_width, viewport.scale_factor);
-    let height = resolve_value(
-        rectangle.size.height,
-        viewport_height,
-        viewport.scale_factor,
-    );
-    let position_x = resolve_value(rectangle.position.x, viewport_width, viewport.scale_factor);
-    let position_y = resolve_value(rectangle.position.y, viewport_height, viewport.scale_factor);
+    let width = viewport.resolve_x(rectangle.size.width);
+    let height = viewport.resolve_y(rectangle.size.height);
+    let position_x = viewport.resolve_x(rectangle.position.x);
+    let position_y = viewport.resolve_y(rectangle.position.y);
 
     let left = position_x - rectangle.anchor.x * width;
     let top = position_y - rectangle.anchor.y * height;
@@ -562,18 +621,44 @@ fn resolve_scissor(rectangle: Rectangle, viewport: Viewport) -> Option<ScissorRe
     })
 }
 
-fn resolve_value(value: LayoutValue, relative_to: f64, scale_factor: f64) -> f64 {
-    match value {
-        LayoutValue::Relative(value) => value * relative_to,
-        LayoutValue::LogicalPixels(value) => value * scale_factor,
-        LayoutValue::PhysicalPixels(value) => value,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{ScissorRect, VertexWriter, Viewport, resolve_scissor};
     use crate::geometry::{LayoutValue, Point, Rectangle, Size};
+
+    #[test]
+    fn viewport_resolves_layout_values_to_physical_pixels() {
+        let viewport = Viewport::new(800, 600, 2.0);
+
+        assert_close(
+            &[
+                viewport.resolve_x(LayoutValue::relative(0.25)),
+                viewport.resolve_y(LayoutValue::relative(0.25)),
+                viewport.resolve_x(LayoutValue::pixels(12.0)),
+                viewport.resolve_y(LayoutValue::physical_pixels(12.0)),
+                viewport.resolve(LayoutValue::relative(0.25), 40.0),
+            ],
+            &[200.0, 150.0, 24.0, 12.0, 10.0],
+        );
+    }
+
+    #[test]
+    fn viewport_converts_physical_geometry_to_ndc() {
+        let viewport = Viewport::new(800, 600, 2.0);
+
+        assert_close(&viewport.to_ndc_position(0.0, 0.0), &[-1.0, 1.0]);
+        assert_close(&viewport.to_ndc_position(400.0, 300.0), &[0.0, 0.0]);
+        assert_close(&viewport.to_ndc_position(800.0, 600.0), &[1.0, -1.0]);
+        assert_close(&viewport.to_ndc_size(400.0, 150.0), &[1.0, 0.5]);
+    }
+
+    #[test]
+    fn zero_sized_viewport_produces_finite_ndc_geometry() {
+        let viewport = Viewport::new(0, 0, 1.0);
+
+        assert_close(&viewport.to_ndc_position(10.0, 10.0), &[0.0, 0.0]);
+        assert_close(&viewport.to_ndc_size(10.0, 10.0), &[0.0, 0.0]);
+    }
 
     #[test]
     fn resolves_and_clamps_scissor_rectangles() {
@@ -622,5 +707,15 @@ mod tests {
         assert_eq!(bytes[0], 0xFF);
         assert_eq!(&bytes[1..5], &0x0102_0304_u32.to_ne_bytes());
         assert_eq!(&bytes[5..], &[5, 6]);
+    }
+
+    fn assert_close(actual: &[f64], expected: &[f64]) {
+        assert_eq!(actual.len(), expected.len());
+        assert!(
+            actual
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| (actual - expected).abs() < f64::EPSILON)
+        );
     }
 }

@@ -48,12 +48,10 @@ fn vs_main(
     @location(5) corner_radii_pixels: vec4<f32>,
     @location(6) border_width_pixels: f32,
 ) -> VertexOutput {
-    let positions = array<vec2<f32>, 6>(
+    let positions = array<vec2<f32>, 4>(
         vec2<f32>(-0.5,  0.5),
         vec2<f32>(-0.5, -0.5),
         vec2<f32>( 0.5,  0.5),
-        vec2<f32>( 0.5,  0.5),
-        vec2<f32>(-0.5, -0.5),
         vec2<f32>( 0.5, -0.5),
     );
 
