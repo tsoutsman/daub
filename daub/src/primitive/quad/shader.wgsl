@@ -102,6 +102,25 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let half_size = in.size_pixels * 0.5;
     let pixel_position = in.local_position * in.size_pixels;
 
+    if in.border_width_pixels == 0.0 {
+        if all(in.corner_radii_pixels == vec4<f32>(0.0)) {
+            let edge_distance = max(
+                abs(pixel_position.x) - half_size.x,
+                abs(pixel_position.y) - half_size.y,
+            );
+            let alpha = in.color.a * coverage(edge_distance);
+            return vec4<f32>(in.color.rgb * alpha, alpha);
+        }
+
+        let outer_distance = rounded_rectangle_distance(
+            pixel_position,
+            half_size,
+            in.corner_radii_pixels,
+        );
+        let alpha = in.color.a * coverage(outer_distance);
+        return vec4<f32>(in.color.rgb * alpha, alpha);
+    }
+
     let outer_distance = rounded_rectangle_distance(
         pixel_position,
         half_size,
