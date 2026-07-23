@@ -9,9 +9,9 @@ use crate::{
 
 /// The Glyphon-backed renderer for [`Text`] primitives.
 pub struct TextRenderer {
+    cache: glyphon::Cache,
     font_system: glyphon::FontSystem,
     swash_cache: glyphon::SwashCache,
-    viewport: glyphon::Viewport,
     atlas: glyphon::TextAtlas,
     batches: Vec<TextBatch>,
     sample_count: u32,
@@ -39,13 +39,12 @@ impl PrimitiveRenderer for TextRenderer {
         _: &mut RenderPipelineCache,
     ) -> Self {
         let cache = glyphon::Cache::new(device);
-        let viewport = glyphon::Viewport::new(device, &cache);
         let atlas = glyphon::TextAtlas::new(device, queue, &cache, config.target_format);
 
         Self {
+            cache,
             font_system: glyphon::FontSystem::new(),
             swash_cache: glyphon::SwashCache::new(),
-            viewport,
             atlas,
             batches: Vec::new(),
             sample_count: config.sample_count,
@@ -54,15 +53,8 @@ impl PrimitiveRenderer for TextRenderer {
         }
     }
 
-    fn start_prepare(&mut self, _: &wgpu::Device, queue: &wgpu::Queue, viewport: Viewport) {
+    fn start_prepare(&mut self, _: &wgpu::Device, _: &wgpu::Queue, _: Viewport) {
         self.atlas.trim();
-        self.viewport.update(
-            queue,
-            glyphon::Resolution {
-                width: viewport.physical_width,
-                height: viewport.physical_height,
-            },
-        );
         self.prepare_batch_index = 0;
         self.render_batch_index = 0;
     }
@@ -79,16 +71,28 @@ impl PrimitiveRenderer for TextRenderer {
         self.prepare_batch_index += 1;
 
         if batch_index == self.batches.len() {
-            self.batches
-                .push(TextBatch::new(&mut self.atlas, device, self.sample_count));
+            self.batches.push(TextBatch::new(
+                &mut self.atlas,
+                device,
+                &self.cache,
+                self.sample_count,
+            ));
         }
 
         let batch = &mut self.batches[batch_index];
+        batch.viewport.update(
+            queue,
+            glyphon::Resolution {
+                width: viewport.physical_width,
+                height: viewport.physical_height,
+            },
+        );
         batch.prepare_buffers(&mut self.font_system, viewport, primitives);
 
         let scale = physical_scale(viewport.scale_factor);
         let TextBatch {
             renderer,
+            viewport: glyphon_viewport,
             buffers,
             areas,
         } = batch;
@@ -112,7 +116,7 @@ impl PrimitiveRenderer for TextRenderer {
                 queue,
                 &mut self.font_system,
                 &mut self.atlas,
-                &self.viewport,
+                glyphon_viewport,
                 text_areas,
                 &mut self.swash_cache,
             )
@@ -134,19 +138,25 @@ impl PrimitiveRenderer for TextRenderer {
 
         batch
             .renderer
-            .render(&self.atlas, &self.viewport, render_pass)
+            .render(&self.atlas, &batch.viewport, render_pass)
             .map_err(|error| Box::new(error) as PrimitiveRendererError)
     }
 }
 
 struct TextBatch {
     renderer: glyphon::TextRenderer,
+    viewport: glyphon::Viewport,
     buffers: Vec<glyphon::Buffer>,
     areas: Vec<PreparedTextArea>,
 }
 
 impl TextBatch {
-    fn new(atlas: &mut glyphon::TextAtlas, device: &wgpu::Device, sample_count: u32) -> Self {
+    fn new(
+        atlas: &mut glyphon::TextAtlas,
+        device: &wgpu::Device,
+        cache: &glyphon::Cache,
+        sample_count: u32,
+    ) -> Self {
         Self {
             renderer: glyphon::TextRenderer::new(
                 atlas,
@@ -157,6 +167,7 @@ impl TextBatch {
                 },
                 None,
             ),
+            viewport: glyphon::Viewport::new(device, cache),
             buffers: Vec::new(),
             areas: Vec::new(),
         }
@@ -331,21 +342,25 @@ mod tests {
     }
 
     #[test]
-    fn prepares_one_text_batch_per_layer() {
+    fn prepares_one_text_batch_for_a_layer_viewport() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let mut renderer = Renderer::new(
             &device,
             &queue,
             RendererConfig::new(wgpu::TextureFormat::Rgba8UnormSrgb),
         );
-        let bounds = Rectangle::new(
-            Point::default(),
-            Size::new(LayoutValue::pixels(400.0), LayoutValue::pixels(200.0)),
+        let viewport_bounds = Rectangle::new(
+            Point::new(LayoutValue::pixels(100.0), LayoutValue::pixels(50.0)),
+            Size::new(LayoutValue::pixels(200.0), LayoutValue::pixels(100.0)),
         );
-        let mut layer = Layer::new(bounds);
-        layer.push(Text::new(bounds, "First", Color::WHITE));
-        layer.push(Quad::new(bounds, Color::BLACK));
-        layer.push(Text::new(bounds, "Second", Color::WHITE));
+        let local_bounds = Rectangle::new(
+            Point::default(),
+            Size::new(LayoutValue::pixels(200.0), LayoutValue::pixels(100.0)),
+        );
+        let mut layer = Layer::new().viewport(viewport_bounds);
+        layer.push(Text::new(local_bounds, "First", Color::WHITE));
+        layer.push(Quad::new(local_bounds, Color::BLACK));
+        layer.push(Text::new(local_bounds, "Second", Color::WHITE));
         let mut scene = Scene::new();
         scene.push(layer);
 

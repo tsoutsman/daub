@@ -3,6 +3,8 @@ use std::{
     fmt,
 };
 
+use derive_setters::Setters;
+
 use crate::{
     geometry::Rectangle,
     render::{
@@ -91,23 +93,36 @@ impl fmt::Debug for Scene {
     }
 }
 
-/// A clipped collection of primitives grouped by type.
+/// A collection of primitives sharing viewport and clipping state, grouped by
+/// type.
 ///
 /// A layer contains at most one batch for each primitive type. The first
 /// occurrence of a type establishes that batch's position relative to other
 /// types; later primitives of the same type join the existing batch regardless
 /// of intervening submissions. Same-type insertion order is preserved, while
 /// cross-type submission order after first occurrence is intentionally ignored.
+#[derive(Default, Setters)]
+#[setters(strip_option)]
 pub struct Layer {
-    pub clip_bounds: Rectangle,
+    /// Uses a local coordinate system mapped into these bounds.
+    ///
+    /// Without a viewport, primitives use the full render target's coordinate
+    /// system. Viewport bounds are resolved relative to the render target.
+    pub(crate) viewport: Option<Rectangle>,
+    /// Clips this layer to these bounds in render-target coordinates.
+    ///
+    /// Without clip bounds, the layer uses the full render target's scissor.
+    pub(crate) clip_bounds: Option<Rectangle>,
+    #[setters(skip)]
     batches: Vec<Box<dyn ErasedBatch>>,
 }
 
 impl Layer {
     #[must_use]
-    pub const fn new(clip_bounds: Rectangle) -> Self {
+    pub const fn new() -> Self {
         Self {
-            clip_bounds,
+            viewport: None,
+            clip_bounds: None,
             batches: Vec::new(),
         }
     }
@@ -198,6 +213,7 @@ impl fmt::Debug for Layer {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Layer")
+            .field("viewport", &self.viewport)
             .field("clip_bounds", &self.clip_bounds)
             .field("len", &self.len())
             .field("batch_count", &self.batch_count())
@@ -337,10 +353,7 @@ impl dyn ErasedBatch + '_ {
 #[cfg(test)]
 mod tests {
     use super::{Layer, Scene};
-    use crate::{
-        geometry::Rectangle,
-        render::{Primitive, PrimitiveRenderer, RenderPipelineCache, RendererConfig},
-    };
+    use crate::render::{Primitive, PrimitiveRenderer, RenderPipelineCache, RendererConfig};
 
     struct PrimitiveA(u32);
     struct PrimitiveB;
@@ -402,8 +415,7 @@ mod tests {
 
     #[test]
     fn groups_interleaved_primitives_by_type() {
-        let bounds = Rectangle::default();
-        let mut layer = Layer::new(bounds);
+        let mut layer = Layer::new();
 
         layer.push(PrimitiveA(1));
         layer.push(PrimitiveB);
@@ -425,8 +437,7 @@ mod tests {
 
     #[test]
     fn type_order_follows_first_appearance() {
-        let bounds = Rectangle::default();
-        let mut layer = Layer::new(bounds);
+        let mut layer = Layer::new();
 
         layer.push(PrimitiveB);
         layer.push(PrimitiveA(1));
@@ -439,9 +450,9 @@ mod tests {
 
     #[test]
     fn scene_preserves_layer_order() {
-        let mut first = Layer::new(Rectangle::default());
+        let mut first = Layer::new();
         first.push(PrimitiveA(1));
-        let mut second = Layer::new(Rectangle::default());
+        let mut second = Layer::new();
         second.push(PrimitiveB);
         let mut scene = Scene::new();
 
@@ -463,9 +474,9 @@ mod tests {
 
     #[test]
     fn scene_can_be_created_from_owned_layers() {
-        let mut first = Layer::new(Rectangle::default());
+        let mut first = Layer::new();
         first.push(PrimitiveA(1));
-        let mut second = Layer::new(Rectangle::default());
+        let mut second = Layer::new();
         second.push(PrimitiveB);
 
         let scene = Scene::from([first, second]);
@@ -476,7 +487,7 @@ mod tests {
 
     #[test]
     fn scene_can_be_created_from_one_layer() {
-        let mut layer = Layer::new(Rectangle::default());
+        let mut layer = Layer::new();
         layer.push(PrimitiveA(1));
 
         let scene = Scene::from(layer);
@@ -487,7 +498,7 @@ mod tests {
 
     #[test]
     fn empty_extend_does_not_create_a_batch() {
-        let mut layer = Layer::new(Rectangle::default());
+        let mut layer = Layer::new();
 
         layer.extend::<PrimitiveA, _>(std::iter::empty());
 

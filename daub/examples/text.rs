@@ -22,7 +22,7 @@ impl daub::winit::Application for Example {
             Size::new(LayoutValue::relative(0.7), LayoutValue::relative(0.5)),
         );
 
-        let mut layer = Layer::new(frame.bounds());
+        let mut layer = Layer::new();
         layer.push(
             Quad::new(card, Color::rgb(0.12, 0.16, 0.24))
                 .corner_radii(CornerRadii::uniform(LayoutValue::pixels(12.0))),

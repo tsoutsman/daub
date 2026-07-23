@@ -15,7 +15,7 @@ impl daub::winit::Application for Example {
     }
 
     fn render(&mut self, frame: daub::winit::Frame<'_>) {
-        let mut layer = Layer::new(frame.bounds());
+        let mut layer = Layer::new();
         layer.push(Quad {
             rectangle: Rectangle {
                 position: Point::new(LayoutValue::Relative(0.5), LayoutValue::Relative(0.5)),

@@ -300,12 +300,16 @@ pub trait PrimitiveRenderer: Sized + 'static {
     /// This is called once per [`Renderer::prepare`] before any batches are
     /// prepared, including when this renderer has no batches in the frame. It
     /// is a suitable place to clear renderer-owned CPU staging collections.
+    /// `viewport` describes the full render target.
     fn start_prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, viewport: Viewport) {
         let _ = (device, queue, viewport);
     }
 
     /// Prepares one layer-local type batch and appends its data to the shared
     /// vertex buffer through `vertices`.
+    ///
+    /// `viewport` describes the layer's local coordinate system. Its physical
+    /// dimensions differ from the render target when the layer has a viewport.
     ///
     /// Renderers that manage their own GPU buffers can use the default empty
     /// implementation.
@@ -339,6 +343,9 @@ pub trait PrimitiveRenderer: Sized + 'static {
     ///
     /// `vertex_buffer` contains the bytes appended by [`Self::prepare_batch`]
     /// for this batch. It is `None` when preparation appended no bytes.
+    ///
+    /// The layer's viewport and scissor are already set. Implementations must
+    /// not change either state; Daub retains them across draws and layers.
     ///
     /// # Errors
     ///
@@ -441,49 +448,82 @@ impl Renderer {
         scene: &'scene Scene,
     ) -> Result<PreparedFrame<'renderer, 'scene>> {
         self.vertex_bytes.clear();
-        let mut draws = Vec::new();
-        let mut batches = Vec::new();
+        let mut layers = Vec::new();
 
         for layer in scene.layers() {
-            let Some(scissor) = resolve_scissor(layer.clip_bounds, viewport) else {
+            let Some(render_viewport) = resolve_render_viewport(layer.viewport, viewport) else {
                 continue;
             };
+            let Some(scissor) = resolve_layer_scissor(layer.clip_bounds, viewport) else {
+                continue;
+            };
+            let local_viewport = Viewport::new(
+                render_viewport.width,
+                render_viewport.height,
+                viewport.scale_factor,
+            );
+            let mut batches = Vec::new();
 
             for batch in layer.batches() {
                 if batch.is_empty() {
                     continue;
                 }
 
-                batches.push((batch, scissor));
+                batches.push(batch);
+            }
+
+            if !batches.is_empty() {
+                layers.push(PendingLayer {
+                    viewport: render_viewport,
+                    scissor,
+                    local_viewport,
+                    batches,
+                });
             }
         }
 
-        for (batch, _) in &batches {
-            self.ensure_primitive_renderer(*batch);
+        for layer in &layers {
+            for batch in &layer.batches {
+                self.ensure_primitive_renderer(*batch);
+            }
         }
 
         for renderer in self.primitive_renderers.values_mut() {
             renderer.start_prepare(&self.device, &self.queue, viewport);
         }
 
-        for (batch, scissor) in batches {
-            align_vec(&mut self.vertex_bytes);
-            let start = self.vertex_bytes.len() as wgpu::BufferAddress;
+        let mut prepared_layers = Vec::with_capacity(layers.len());
+        for layer in layers {
+            let mut draws = Vec::with_capacity(layer.batches.len());
+            for batch in layer.batches {
+                align_vec(&mut self.vertex_bytes);
+                let start = self.vertex_bytes.len() as wgpu::BufferAddress;
 
-            let renderer_type_id = batch.renderer_type_id();
-            let renderer = self.primitive_renderers.get_mut(&renderer_type_id);
-            let Some(renderer) = renderer else {
-                continue;
-            };
-            let mut vertices = VertexWriter::new(&mut self.vertex_bytes);
-            renderer.prepare_batch(&self.device, &self.queue, viewport, batch, &mut vertices)?;
-            let end = start + vertices.len() as wgpu::BufferAddress;
+                let renderer_type_id = batch.renderer_type_id();
+                let renderer = self.primitive_renderers.get_mut(&renderer_type_id);
+                let Some(renderer) = renderer else {
+                    continue;
+                };
+                let mut vertices = VertexWriter::new(&mut self.vertex_bytes);
+                renderer.prepare_batch(
+                    &self.device,
+                    &self.queue,
+                    layer.local_viewport,
+                    batch,
+                    &mut vertices,
+                )?;
+                let end = start + vertices.len() as wgpu::BufferAddress;
 
-            draws.push(PreparedDraw {
-                batch,
-                renderer_type_id,
-                vertex_range: (start != end).then_some(start..end),
-                scissor,
+                draws.push(PreparedDraw {
+                    batch,
+                    renderer_type_id,
+                    vertex_range: (start != end).then_some(start..end),
+                });
+            }
+            prepared_layers.push(PreparedLayer {
+                viewport: layer.viewport,
+                scissor: layer.scissor,
+                draws,
             });
         }
 
@@ -496,7 +536,7 @@ impl Renderer {
 
         Ok(PreparedFrame {
             renderer: self,
-            draws,
+            layers: prepared_layers,
         })
     }
 
@@ -555,7 +595,7 @@ impl fmt::Debug for Renderer {
 /// Values are created by [`Renderer::prepare`].
 pub struct PreparedFrame<'renderer, 'scene> {
     renderer: &'renderer mut Renderer,
-    draws: Vec<PreparedDraw<'scene>>,
+    layers: Vec<PreparedLayer<'scene>>,
 }
 
 impl PreparedFrame<'_, '_> {
@@ -571,24 +611,31 @@ impl PreparedFrame<'_, '_> {
             ..
         } = &mut *self.renderer;
 
-        for draw in &self.draws {
-            let renderer = primitive_renderers.get_mut(&draw.renderer_type_id);
-            let Some(renderer) = renderer else {
-                continue;
-            };
+        let mut current_viewport = None;
+        let mut current_scissor = None;
+        for layer in &self.layers {
+            if current_viewport != Some(layer.viewport) {
+                layer.viewport.set(render_pass);
+                current_viewport = Some(layer.viewport);
+            }
+            if current_scissor != Some(layer.scissor) {
+                layer.scissor.set(render_pass);
+                current_scissor = Some(layer.scissor);
+            }
 
-            render_pass.set_scissor_rect(
-                draw.scissor.x,
-                draw.scissor.y,
-                draw.scissor.width,
-                draw.scissor.height,
-            );
-            let vertex_slice = draw.vertex_range.as_ref().and_then(|range| {
-                vertex_buffer
-                    .as_ref()
-                    .map(|buffer| buffer.slice(range.clone()))
-            });
-            renderer.render_batch(draw.batch, render_pass, vertex_slice)?;
+            for draw in &layer.draws {
+                let renderer = primitive_renderers.get_mut(&draw.renderer_type_id);
+                let Some(renderer) = renderer else {
+                    continue;
+                };
+
+                let vertex_slice = draw.vertex_range.as_ref().and_then(|range| {
+                    vertex_buffer
+                        .as_ref()
+                        .map(|buffer| buffer.slice(range.clone()))
+                });
+                renderer.render_batch(draw.batch, render_pass, vertex_slice)?;
+            }
         }
 
         Ok(())
@@ -596,12 +643,12 @@ impl PreparedFrame<'_, '_> {
 
     #[must_use]
     pub fn draw_count(&self) -> usize {
-        self.draws.len()
+        self.layers.iter().map(|layer| layer.draws.len()).sum()
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.draws.is_empty()
+        self.layers.iter().all(|layer| layer.draws.is_empty())
     }
 }
 
@@ -609,6 +656,7 @@ impl fmt::Debug for PreparedFrame<'_, '_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("PreparedFrame")
+            .field("layer_count", &self.layers.len())
             .field("draw_count", &self.draw_count())
             .finish_non_exhaustive()
     }
@@ -618,7 +666,44 @@ struct PreparedDraw<'scene> {
     batch: &'scene dyn ErasedBatch,
     renderer_type_id: TypeId,
     vertex_range: Option<Range<wgpu::BufferAddress>>,
+}
+
+struct PendingLayer<'scene> {
+    viewport: RenderViewport,
     scissor: ScissorRect,
+    local_viewport: Viewport,
+    batches: Vec<&'scene dyn ErasedBatch>,
+}
+
+struct PreparedLayer<'scene> {
+    viewport: RenderViewport,
+    scissor: ScissorRect,
+    draws: Vec<PreparedDraw<'scene>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RenderViewport {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl RenderViewport {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "wgpu texture dimensions are small enough to be represented exactly as f32"
+    )]
+    fn set(self, render_pass: &mut wgpu::RenderPass<'_>) {
+        render_pass.set_viewport(
+            self.x as f32,
+            self.y as f32,
+            self.width as f32,
+            self.height as f32,
+            0.0,
+            1.0,
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -627,6 +712,12 @@ struct ScissorRect {
     y: u32,
     width: u32,
     height: u32,
+}
+
+impl ScissorRect {
+    fn set(self, render_pass: &mut wgpu::RenderPass<'_>) {
+        render_pass.set_scissor_rect(self.x, self.y, self.width, self.height);
+    }
 }
 
 pub(crate) trait ErasedPrimitiveRenderer: Any {
@@ -738,17 +829,116 @@ fn resolve_scissor(rectangle: Rectangle, viewport: Viewport) -> Option<ScissorRe
     })
 }
 
+fn resolve_layer_scissor(rectangle: Option<Rectangle>, viewport: Viewport) -> Option<ScissorRect> {
+    match rectangle {
+        Some(rectangle) => resolve_scissor(rectangle, viewport),
+        None if viewport.physical_width > 0 && viewport.physical_height > 0 => Some(ScissorRect {
+            x: 0,
+            y: 0,
+            width: viewport.physical_width,
+            height: viewport.physical_height,
+        }),
+        None => None,
+    }
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "finite coordinates are clamped to the render target's u32 dimensions before \
+              conversion"
+)]
+fn resolve_render_viewport(
+    rectangle: Option<Rectangle>,
+    target: Viewport,
+) -> Option<RenderViewport> {
+    let Some(rectangle) = rectangle else {
+        return (target.physical_width > 0 && target.physical_height > 0).then_some(
+            RenderViewport {
+                x: 0,
+                y: 0,
+                width: target.physical_width,
+                height: target.physical_height,
+            },
+        );
+    };
+
+    let target_width = f64::from(target.physical_width);
+    let target_height = f64::from(target.physical_height);
+    let resolved = target.resolve_rectangle(rectangle)?;
+    let left = resolved.left.clamp(0.0, target_width).floor();
+    let top = resolved.top.clamp(0.0, target_height).floor();
+    let right = resolved.right().clamp(0.0, target_width).ceil();
+    let bottom = resolved.bottom().clamp(0.0, target_height).ceil();
+
+    if right <= left || bottom <= top {
+        return None;
+    }
+
+    Some(RenderViewport {
+        x: left as u32,
+        y: top as u32,
+        width: (right - left) as u32,
+        height: (bottom - top) as u32,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::any::TypeId;
 
-    use super::{Renderer, RendererConfig, ScissorRect, VertexWriter, Viewport, resolve_scissor};
+    use super::{
+        Primitive, PrimitiveRenderer, PrimitiveRendererError, RenderPipelineCache, RenderViewport,
+        Renderer, RendererConfig, ScissorRect, VertexWriter, Viewport, resolve_scissor,
+    };
     use crate::{
         color::Color,
         geometry::{LayoutValue, Point, Rectangle, Size},
         primitive::{Quad, QuadRenderer, Text, TextRenderer},
         scene::{Layer, Scene},
     };
+
+    struct ViewportProbe;
+
+    struct ViewportProbeRenderer;
+
+    impl Primitive for ViewportProbe {
+        type Renderer = ViewportProbeRenderer;
+    }
+
+    impl PrimitiveRenderer for ViewportProbeRenderer {
+        type Primitive = ViewportProbe;
+
+        fn new(
+            _: &wgpu::Device,
+            _: &wgpu::Queue,
+            _: &RendererConfig,
+            _: &mut RenderPipelineCache,
+        ) -> Self {
+            Self
+        }
+
+        fn prepare_batch(
+            &mut self,
+            _: &wgpu::Device,
+            _: &wgpu::Queue,
+            viewport: Viewport,
+            _: &[Self::Primitive],
+            vertices: &mut VertexWriter<'_>,
+        ) -> Result<(), PrimitiveRendererError> {
+            vertices.write(&[viewport.physical_width, viewport.physical_height]);
+            Ok(())
+        }
+
+        fn render_batch(
+            &mut self,
+            _: &[Self::Primitive],
+            _: &mut wgpu::RenderPass<'_>,
+            _: Option<wgpu::BufferSlice<'_>>,
+        ) -> Result<(), PrimitiveRendererError> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn viewport_resolves_layout_values_to_physical_pixels() {
@@ -815,6 +1005,87 @@ mod tests {
     }
 
     #[test]
+    fn layer_viewport_controls_preparation_and_resets_draw_state() {
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let mut renderer = Renderer::new(
+            &device,
+            &queue,
+            RendererConfig::new(wgpu::TextureFormat::Rgba8UnormSrgb),
+        );
+        let target = Viewport::new(800, 600, 2.0);
+        let viewport_bounds = Rectangle::new(
+            Point::new(LayoutValue::pixels(50.0), LayoutValue::pixels(25.0)),
+            Size::new(LayoutValue::pixels(200.0), LayoutValue::pixels(100.0)),
+        );
+        let clip_bounds = Rectangle::new(
+            Point::new(LayoutValue::pixels(60.0), LayoutValue::pixels(35.0)),
+            Size::new(LayoutValue::pixels(180.0), LayoutValue::pixels(80.0)),
+        );
+        let mut local = Layer::new()
+            .viewport(viewport_bounds)
+            .clip_bounds(clip_bounds);
+        local.push(ViewportProbe);
+        let mut global = Layer::new();
+        global.push(ViewportProbe);
+        let scene = Scene::from([local, global]);
+
+        let Ok(prepared) = renderer.prepare(target, &scene) else {
+            std::process::abort();
+        };
+
+        assert_eq!(prepared.draw_count(), 2);
+        assert_eq!(prepared.layers.len(), 2);
+        assert_eq!(
+            prepared.layers[0].viewport,
+            RenderViewport {
+                x: 100,
+                y: 50,
+                width: 400,
+                height: 200,
+            }
+        );
+        assert_eq!(
+            prepared.layers[0].scissor,
+            ScissorRect {
+                x: 120,
+                y: 70,
+                width: 360,
+                height: 160,
+            }
+        );
+        assert_eq!(prepared.layers[0].draws.len(), 1);
+        assert_eq!(
+            prepared.layers[1].viewport,
+            RenderViewport {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 600,
+            }
+        );
+        assert_eq!(
+            prepared.layers[1].scissor,
+            ScissorRect {
+                x: 0,
+                y: 0,
+                width: 800,
+                height: 600,
+            }
+        );
+        assert_eq!(prepared.layers[1].draws.len(), 1);
+        assert_eq!(
+            prepared.renderer.vertex_bytes,
+            [
+                400_u32.to_ne_bytes(),
+                200_u32.to_ne_bytes(),
+                800_u32.to_ne_bytes(),
+                600_u32.to_ne_bytes(),
+            ]
+            .concat()
+        );
+    }
+
+    #[test]
     fn vertex_writer_only_reports_bytes_from_its_batch() {
         let mut bytes = vec![0xFF];
 
@@ -842,10 +1113,6 @@ mod tests {
             RendererConfig::new(wgpu::TextureFormat::Rgba8UnormSrgb),
         );
         let viewport = Viewport::new(400, 200, 1.0);
-        let scene_bounds = Rectangle::new(
-            Point::default(),
-            Size::new(LayoutValue::pixels(400.0), LayoutValue::pixels(200.0)),
-        );
         let left = Rectangle::new(
             Point::new(LayoutValue::pixels(0.0), LayoutValue::pixels(0.0)),
             Size::new(LayoutValue::pixels(100.0), LayoutValue::pixels(50.0)),
@@ -854,7 +1121,7 @@ mod tests {
             Point::new(LayoutValue::pixels(200.0), LayoutValue::pixels(0.0)),
             Size::new(LayoutValue::pixels(100.0), LayoutValue::pixels(50.0)),
         );
-        let mut layer = Layer::new(scene_bounds);
+        let mut layer = Layer::new();
         layer.push(Quad::new(left, Color::BLACK));
         layer.push(Text::new(left, "Left", Color::WHITE));
         layer.push(Quad::new(right, Color::BLACK));
@@ -867,16 +1134,18 @@ mod tests {
         };
 
         assert_eq!(prepared.draw_count(), 2);
+        assert_eq!(prepared.layers.len(), 1);
+        assert_eq!(prepared.layers[0].draws.len(), 2);
         assert_eq!(
-            prepared.draws[0].renderer_type_id,
+            prepared.layers[0].draws[0].renderer_type_id,
             TypeId::of::<QuadRenderer>()
         );
-        assert_eq!(prepared.draws[0].batch.len(), 2);
+        assert_eq!(prepared.layers[0].draws[0].batch.len(), 2);
         assert_eq!(
-            prepared.draws[1].renderer_type_id,
+            prepared.layers[0].draws[1].renderer_type_id,
             TypeId::of::<TextRenderer>()
         );
-        assert_eq!(prepared.draws[1].batch.len(), 2);
+        assert_eq!(prepared.layers[0].draws[1].batch.len(), 2);
     }
 
     #[test]
@@ -892,7 +1161,7 @@ mod tests {
             Point::default(),
             Size::new(LayoutValue::pixels(400.0), LayoutValue::pixels(200.0)),
         );
-        let mut layer = Layer::new(bounds);
+        let mut layer = Layer::new();
         layer.push(Quad::new(bounds, Color::BLACK));
         layer.push(Text::new(bounds, "First", Color::WHITE));
         layer.push(Quad::new(bounds, Color::BLACK));
@@ -920,10 +1189,10 @@ mod tests {
             Point::default(),
             Size::new(LayoutValue::pixels(400.0), LayoutValue::pixels(200.0)),
         );
-        let mut first = Layer::new(bounds);
+        let mut first = Layer::new();
         first.push(Quad::new(bounds, Color::BLACK));
         first.push(Text::new(bounds, "First", Color::WHITE));
-        let mut second = Layer::new(bounds);
+        let mut second = Layer::new();
         second.push(Quad::new(bounds, Color::BLACK));
         second.push(Text::new(bounds, "Second", Color::WHITE));
         let mut scene = Scene::new();
@@ -935,16 +1204,21 @@ mod tests {
         };
 
         assert_eq!(prepared.draw_count(), 4);
+        assert_eq!(prepared.layers.len(), 2);
+        assert_eq!(prepared.layers[0].draws.len(), 2);
+        assert_eq!(prepared.layers[1].draws.len(), 2);
+        assert_eq!(prepared.layers[0].viewport, prepared.layers[1].viewport);
+        assert_eq!(prepared.layers[0].scissor, prepared.layers[1].scissor);
         assert_eq!(
-            prepared.draws[0].renderer_type_id,
+            prepared.layers[0].draws[0].renderer_type_id,
             TypeId::of::<QuadRenderer>()
         );
         assert_eq!(
-            prepared.draws[1].renderer_type_id,
+            prepared.layers[0].draws[1].renderer_type_id,
             TypeId::of::<TextRenderer>()
         );
         assert_eq!(
-            prepared.draws[2].renderer_type_id,
+            prepared.layers[1].draws[0].renderer_type_id,
             TypeId::of::<QuadRenderer>()
         );
     }
