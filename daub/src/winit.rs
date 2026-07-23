@@ -59,7 +59,7 @@ impl Default for Settings {
             window: Window::default_attributes().with_title("Daub"),
             clear_color: Color::BLACK,
             redraw_mode: RedrawMode::OnDemand,
-            power_preference: wgpu::PowerPreference::default(),
+            power_preference: wgpu::PowerPreference::HighPerformance,
             present_mode: wgpu::PresentMode::AutoVsync,
             required_features: wgpu::Features::empty(),
             required_limits: wgpu::Limits::default(),
