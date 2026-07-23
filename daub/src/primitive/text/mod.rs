@@ -7,6 +7,7 @@ use crate::{color::Color, geometry::Rectangle, render::Primitive};
 
 /// A font family used to select faces for text shaping.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Hash)]
 pub enum FontFamily {
     Name(String),
@@ -33,6 +34,7 @@ impl FontFamily {
 
 /// The numeric weight of a font face.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FontWeight(pub u16);
 
@@ -60,6 +62,7 @@ impl Default for FontWeight {
 
 /// The width class of a font face.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FontStretch {
     UltraCondensed,
@@ -92,6 +95,7 @@ impl FontStretch {
 
 /// The slant style of a font face.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FontStyle {
     #[default]
@@ -112,6 +116,7 @@ impl FontStyle {
 
 /// The wrapping behavior of a text buffer.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextWrap {
     None,
@@ -134,6 +139,7 @@ impl TextWrap {
 
 /// The shaping strategy used for a text buffer.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Shaping {
     Basic,
@@ -152,6 +158,7 @@ impl Shaping {
 
 /// A single-style block of shaped text constrained to a rectangle.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Clone, PartialEq, Setters)]
 pub struct Text {
     pub rectangle: Rectangle,

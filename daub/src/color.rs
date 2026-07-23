@@ -1,11 +1,12 @@
 /// An RGBA color with floating-point components.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
-    pub red: f32,
-    pub green: f32,
-    pub blue: f32,
-    pub alpha: f32,
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
 }
 
 impl Color {
@@ -19,12 +20,12 @@ impl Color {
     }
 
     #[must_use]
-    pub const fn rgba(red: f32, green: f32, blue: f32, alpha: f32) -> Self {
+    pub const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Self {
         Self {
-            red,
-            green,
-            blue,
-            alpha,
+            r,
+            g,
+            b,
+            a,
         }
     }
 }

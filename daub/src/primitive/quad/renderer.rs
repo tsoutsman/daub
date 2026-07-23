@@ -170,7 +170,7 @@ impl QuadInstance {
 }
 
 fn color_components(color: Color) -> [f32; 4] {
-    [color.red, color.green, color.blue, color.alpha]
+    [color.r, color.g, color.b, color.a]
 }
 
 #[expect(

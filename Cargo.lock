@@ -408,6 +408,7 @@ dependencies = [
  "glyphon",
  "ocaml",
  "pollster",
+ "serde",
  "wgpu",
  "winit",
 ]

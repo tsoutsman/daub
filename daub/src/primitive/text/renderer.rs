@@ -239,10 +239,10 @@ fn physical_scale(scale_factor: f64) -> f32 {
 
 fn to_glyphon_color(color: Color) -> glyphon::Color {
     glyphon::Color::rgba(
-        color_component(color.red),
-        color_component(color.green),
-        color_component(color.blue),
-        color_component(color.alpha),
+        color_component(color.r),
+        color_component(color.g),
+        color_component(color.b),
+        color_component(color.a),
     )
 }
 

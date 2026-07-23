@@ -1,4 +1,5 @@
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub enum LayoutValue {
     Relative(f64),
@@ -42,6 +43,7 @@ impl From<LayoutValue> for f64 {
 }
 
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Point {
     pub x: LayoutValue,
@@ -56,6 +58,7 @@ impl Point {
 }
 
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Size {
     pub width: LayoutValue,
@@ -73,6 +76,7 @@ impl Size {
 ///
 /// `(0, 0)` is the top-left corner and `(1, 1)` is the bottom-right corner.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Anchor {
     pub x: f64,
@@ -104,6 +108,7 @@ impl Default for Anchor {
 
 /// An axis-aligned rectangle described by an anchored position and a size.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, PartialOrd)]
 pub struct Rectangle {
     pub position: Point,

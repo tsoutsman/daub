@@ -11,6 +11,7 @@ use crate::{
 
 /// The inside border of a [`Quad`].
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Border {
     pub color: Color,
@@ -37,6 +38,7 @@ impl Default for Border {
 
 /// Corner radii ordered by their named rectangle corners.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CornerRadii {
     pub top_left: LayoutValue,
@@ -82,6 +84,7 @@ impl Default for CornerRadii {
 
 /// A filled, optionally bordered axis-aligned rectangle.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Clone, Copy, PartialEq, Setters)]
 pub struct Quad {
     pub rectangle: Rectangle,

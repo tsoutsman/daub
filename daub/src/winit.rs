@@ -18,6 +18,7 @@ use crate::{
 
 /// Controls when another frame is requested after rendering.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RedrawMode {
     /// Render only for the initial frame, resizing, or an explicit
@@ -30,6 +31,7 @@ pub enum RedrawMode {
 
 /// An action requested in response to a window event.
 #[cfg_attr(feature = "ocaml", derive(ocaml::FromValue, ocaml::ToValue))]
+#[cfg_attr(feature = "serde", derive(serde::Deserialize, serde::Serialize))]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventAction {
     #[default]
@@ -630,9 +632,9 @@ fn create_multisample_target(
 
 fn to_wgpu_color(color: Color) -> wgpu::Color {
     wgpu::Color {
-        r: f64::from(color.red),
-        g: f64::from(color.green),
-        b: f64::from(color.blue),
-        a: f64::from(color.alpha),
+        r: f64::from(color.r),
+        g: f64::from(color.g),
+        b: f64::from(color.b),
+        a: f64::from(color.a),
     }
 }
