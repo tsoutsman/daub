@@ -1,5 +1,5 @@
 use daub::{
-    RendererConfig, Scene,
+    Layer, RendererConfig,
     color::Color,
     geometry::{Anchor, LayoutValue, Point, Rectangle, Size},
     primitive::{Border, CornerRadii, Quad},
@@ -15,8 +15,8 @@ impl daub::winit::Application for Example {
     }
 
     fn render(&mut self, frame: daub::winit::Frame<'_>) {
-        let mut scene = Scene::new(frame.bounds());
-        scene.push(Quad {
+        let mut layer = Layer::new(frame.bounds());
+        layer.push(Quad {
             rectangle: Rectangle {
                 position: Point::new(LayoutValue::Relative(0.5), LayoutValue::Relative(0.5)),
                 size: Size::new(LayoutValue::Relative(0.5), LayoutValue::Relative(0.5)),
@@ -26,7 +26,7 @@ impl daub::winit::Application for Example {
             border: Border::new(Color::BLACK, LayoutValue::pixels(5.)),
             corner_radii: CornerRadii::uniform(LayoutValue::pixels(3.)),
         });
-        let result = frame.render(&[scene]);
+        let result = frame.render(layer);
         assert!(result.is_ok(), "{result:?}");
     }
 }

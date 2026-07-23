@@ -7,10 +7,10 @@ use std::{
 
 use crate::{
     geometry::{LayoutValue, Rectangle},
-    scene::{ErasedBatch, Scene, TypedBatch},
+    scene::{ErasedBatch, Scene},
 };
 
-/// A value that can be submitted to a [`Scene`].
+/// A value that can be submitted to a [`crate::scene::Layer`].
 pub trait Primitive: 'static {
     type Renderer: PrimitiveRenderer<Primitive = Self>;
 }
@@ -282,9 +282,8 @@ impl<'a> VertexWriter<'a> {
 
 /// Prepares and renders one concrete [`Primitive`] type.
 ///
-/// A renderer may be called several times in one pass when batches of its
-/// primitive type are separated by other primitive types. Each renderer binds
-/// the pipelines and resources required by its batch in [`Self::render_batch`].
+/// Each renderer binds the pipelines and resources required by its layer-local
+/// type batch in [`Self::render_batch`].
 pub trait PrimitiveRenderer: Sized + 'static {
     type Primitive: Primitive<Renderer = Self>;
 
@@ -305,8 +304,8 @@ pub trait PrimitiveRenderer: Sized + 'static {
         let _ = (device, queue, viewport);
     }
 
-    /// Prepares one consecutive batch and appends its data to the shared vertex
-    /// buffer through `vertices`.
+    /// Prepares one layer-local type batch and appends its data to the shared
+    /// vertex buffer through `vertices`.
     ///
     /// Renderers that manage their own GPU buffers can use the default empty
     /// implementation.
@@ -336,7 +335,7 @@ pub trait PrimitiveRenderer: Sized + 'static {
         let _ = (device, queue);
     }
 
-    /// Draws one consecutive batch.
+    /// Draws one layer-local type batch.
     ///
     /// `vertex_buffer` contains the bytes appended by [`Self::prepare_batch`]
     /// for this batch. It is `None` when preparation appended no bytes.
@@ -439,25 +438,28 @@ impl Renderer {
     pub fn prepare<'renderer, 'scene>(
         &'renderer mut self,
         viewport: Viewport,
-        scenes: &'scene [Scene],
+        scene: &'scene Scene,
     ) -> Result<PreparedFrame<'renderer, 'scene>> {
         self.vertex_bytes.clear();
         let mut draws = Vec::new();
         let mut batches = Vec::new();
 
-        for scene in scenes {
-            let Some(scissor) = resolve_scissor(scene.clip_bounds, viewport) else {
+        for layer in scene.layers() {
+            let Some(scissor) = resolve_scissor(layer.clip_bounds, viewport) else {
                 continue;
             };
 
-            for batch in scene.batches() {
+            for batch in layer.batches() {
                 if batch.is_empty() {
                     continue;
                 }
 
-                self.ensure_primitive_renderer(batch);
                 batches.push((batch, scissor));
             }
+        }
+
+        for (batch, _) in &batches {
+            self.ensure_primitive_renderer(*batch);
         }
 
         for renderer in self.primitive_renderers.values_mut() {
@@ -468,7 +470,8 @@ impl Renderer {
             align_vec(&mut self.vertex_bytes);
             let start = self.vertex_bytes.len() as wgpu::BufferAddress;
 
-            let renderer = self.primitive_renderers.get_mut(&batch.renderer_type_id());
+            let renderer_type_id = batch.renderer_type_id();
+            let renderer = self.primitive_renderers.get_mut(&renderer_type_id);
             let Some(renderer) = renderer else {
                 continue;
             };
@@ -478,7 +481,7 @@ impl Renderer {
 
             draws.push(PreparedDraw {
                 batch,
-                renderer_type_id: batch.renderer_type_id(),
+                renderer_type_id,
                 vertex_range: (start != end).then_some(start..end),
                 scissor,
             });
@@ -556,7 +559,7 @@ pub struct PreparedFrame<'renderer, 'scene> {
 }
 
 impl PreparedFrame<'_, '_> {
-    /// Records every prepared draw in scene and submission order.
+    /// Records every prepared draw in strict layer order.
     ///
     /// # Errors
     ///
@@ -664,7 +667,7 @@ where
         batch: &dyn ErasedBatch,
         vertices: &mut VertexWriter<'_>,
     ) -> Result<()> {
-        let Some(batch) = typed_batch::<R>(batch) else {
+        let Some(batch) = batch.downcast_ref::<R::Primitive>() else {
             return Ok(());
         };
         PrimitiveRenderer::prepare_batch(
@@ -688,19 +691,12 @@ where
         render_pass: &mut wgpu::RenderPass<'_>,
         vertex_buffer: Option<wgpu::BufferSlice<'_>>,
     ) -> Result<()> {
-        let Some(batch) = typed_batch::<R>(batch) else {
+        let Some(batch) = batch.downcast_ref::<R::Primitive>() else {
             return Ok(());
         };
         PrimitiveRenderer::render_batch(self, batch.primitives(), render_pass, vertex_buffer)
             .map_err(|source| Error::new::<R>(RenderStage::Render, source))
     }
-}
-
-fn typed_batch<R>(batch: &dyn ErasedBatch) -> Option<&TypedBatch<R::Primitive>>
-where
-    R: PrimitiveRenderer,
-{
-    batch.downcast_ref::<R::Primitive>()
 }
 
 #[expect(
@@ -744,8 +740,15 @@ fn resolve_scissor(rectangle: Rectangle, viewport: Viewport) -> Option<ScissorRe
 
 #[cfg(test)]
 mod tests {
-    use super::{ScissorRect, VertexWriter, Viewport, resolve_scissor};
-    use crate::geometry::{LayoutValue, Point, Rectangle, Size};
+    use std::any::TypeId;
+
+    use super::{Renderer, RendererConfig, ScissorRect, VertexWriter, Viewport, resolve_scissor};
+    use crate::{
+        color::Color,
+        geometry::{LayoutValue, Point, Rectangle, Size},
+        primitive::{Quad, QuadRenderer, Text, TextRenderer},
+        scene::{Layer, Scene},
+    };
 
     #[test]
     fn viewport_resolves_layout_values_to_physical_pixels() {
@@ -828,6 +831,122 @@ mod tests {
         assert_eq!(bytes[0], 0xFF);
         assert_eq!(&bytes[1..5], &0x0102_0304_u32.to_ne_bytes());
         assert_eq!(&bytes[5..], &[5, 6]);
+    }
+
+    #[test]
+    fn batches_disjoint_interleaved_ui_primitives_by_renderer() {
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let mut renderer = Renderer::new(
+            &device,
+            &queue,
+            RendererConfig::new(wgpu::TextureFormat::Rgba8UnormSrgb),
+        );
+        let viewport = Viewport::new(400, 200, 1.0);
+        let scene_bounds = Rectangle::new(
+            Point::default(),
+            Size::new(LayoutValue::pixels(400.0), LayoutValue::pixels(200.0)),
+        );
+        let left = Rectangle::new(
+            Point::new(LayoutValue::pixels(0.0), LayoutValue::pixels(0.0)),
+            Size::new(LayoutValue::pixels(100.0), LayoutValue::pixels(50.0)),
+        );
+        let right = Rectangle::new(
+            Point::new(LayoutValue::pixels(200.0), LayoutValue::pixels(0.0)),
+            Size::new(LayoutValue::pixels(100.0), LayoutValue::pixels(50.0)),
+        );
+        let mut layer = Layer::new(scene_bounds);
+        layer.push(Quad::new(left, Color::BLACK));
+        layer.push(Text::new(left, "Left", Color::WHITE));
+        layer.push(Quad::new(right, Color::BLACK));
+        layer.push(Text::new(right, "Right", Color::WHITE));
+        let mut scene = Scene::new();
+        scene.push(layer);
+
+        let Ok(prepared) = renderer.prepare(viewport, &scene) else {
+            std::process::abort();
+        };
+
+        assert_eq!(prepared.draw_count(), 2);
+        assert_eq!(
+            prepared.draws[0].renderer_type_id,
+            TypeId::of::<QuadRenderer>()
+        );
+        assert_eq!(prepared.draws[0].batch.len(), 2);
+        assert_eq!(
+            prepared.draws[1].renderer_type_id,
+            TypeId::of::<TextRenderer>()
+        );
+        assert_eq!(prepared.draws[1].batch.len(), 2);
+    }
+
+    #[test]
+    fn batches_overlapping_primitives_within_a_layer() {
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let mut renderer = Renderer::new(
+            &device,
+            &queue,
+            RendererConfig::new(wgpu::TextureFormat::Rgba8UnormSrgb),
+        );
+        let viewport = Viewport::new(400, 200, 1.0);
+        let bounds = Rectangle::new(
+            Point::default(),
+            Size::new(LayoutValue::pixels(400.0), LayoutValue::pixels(200.0)),
+        );
+        let mut layer = Layer::new(bounds);
+        layer.push(Quad::new(bounds, Color::BLACK));
+        layer.push(Text::new(bounds, "First", Color::WHITE));
+        layer.push(Quad::new(bounds, Color::BLACK));
+        layer.push(Text::new(bounds, "Second", Color::WHITE));
+        let mut scene = Scene::new();
+        scene.push(layer);
+
+        let Ok(prepared) = renderer.prepare(viewport, &scene) else {
+            std::process::abort();
+        };
+
+        assert_eq!(prepared.draw_count(), 2);
+    }
+
+    #[test]
+    fn layers_are_strict_ordering_barriers() {
+        let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
+        let mut renderer = Renderer::new(
+            &device,
+            &queue,
+            RendererConfig::new(wgpu::TextureFormat::Rgba8UnormSrgb),
+        );
+        let viewport = Viewport::new(400, 200, 1.0);
+        let bounds = Rectangle::new(
+            Point::default(),
+            Size::new(LayoutValue::pixels(400.0), LayoutValue::pixels(200.0)),
+        );
+        let mut first = Layer::new(bounds);
+        first.push(Quad::new(bounds, Color::BLACK));
+        first.push(Text::new(bounds, "First", Color::WHITE));
+        let mut second = Layer::new(bounds);
+        second.push(Quad::new(bounds, Color::BLACK));
+        second.push(Text::new(bounds, "Second", Color::WHITE));
+        let mut scene = Scene::new();
+        scene.push(first);
+        scene.push(second);
+
+        let Ok(prepared) = renderer.prepare(viewport, &scene) else {
+            std::process::abort();
+        };
+
+        assert_eq!(prepared.draw_count(), 4);
+        assert_eq!(
+            prepared.draws[0].renderer_type_id,
+            TypeId::of::<QuadRenderer>()
+        );
+        assert_eq!(
+            prepared.draws[1].renderer_type_id,
+            TypeId::of::<TextRenderer>()
+        );
+        assert_eq!(
+            prepared.draws[2].renderer_type_id,
+            TypeId::of::<QuadRenderer>()
+        );
     }
 
     fn assert_close(actual: &[f64], expected: &[f64]) {

@@ -17,4 +17,4 @@ pub use render::{
     RenderPipelineCache, RenderStage, Renderer, RendererConfig, ResolvedRectangle, VertexWriter,
     Viewport,
 };
-pub use scene::Scene;
+pub use scene::{Layer, Scene};

@@ -296,7 +296,7 @@ mod tests {
         geometry::{Anchor, LayoutValue, Point, Rectangle, Size},
         primitive::{Quad, Text},
         render::{Renderer, RendererConfig, Viewport},
-        scene::Scene,
+        scene::{Layer, Scene},
     };
 
     #[test]
@@ -331,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn prepares_separated_text_batches_in_submission_order() {
+    fn prepares_one_text_batch_per_layer() {
         let (device, queue) = wgpu::Device::noop(&wgpu::DeviceDescriptor::default());
         let mut renderer = Renderer::new(
             &device,
@@ -342,18 +342,19 @@ mod tests {
             Point::default(),
             Size::new(LayoutValue::pixels(400.0), LayoutValue::pixels(200.0)),
         );
-        let mut scene = Scene::new(bounds);
-        scene.push(Text::new(bounds, "First", Color::WHITE));
-        scene.push(Quad::new(bounds, Color::BLACK));
-        scene.push(Text::new(bounds, "Second", Color::WHITE));
-        let scenes = [scene];
+        let mut layer = Layer::new(bounds);
+        layer.push(Text::new(bounds, "First", Color::WHITE));
+        layer.push(Quad::new(bounds, Color::BLACK));
+        layer.push(Text::new(bounds, "Second", Color::WHITE));
+        let mut scene = Scene::new();
+        scene.push(layer);
 
-        let prepared = renderer.prepare(Viewport::new(400, 200, 1.0), &scenes);
+        let prepared = renderer.prepare(Viewport::new(400, 200, 1.0), &scene);
         let Ok(mut prepared) = prepared else {
             std::process::abort();
         };
 
-        assert_eq!(prepared.draw_count(), 3);
+        assert_eq!(prepared.draw_count(), 2);
 
         let target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("text primitive test target"),

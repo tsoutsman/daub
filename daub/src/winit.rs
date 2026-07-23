@@ -133,7 +133,7 @@ impl Frame<'_> {
         )
     }
 
-    /// Renders and presents the supplied scenes.
+    /// Renders and presents the supplied scene.
     ///
     /// Consuming the frame prevents the renderer's shared vertex data from
     /// being prepared more than once before submission.
@@ -141,7 +141,7 @@ impl Frame<'_> {
     /// # Errors
     ///
     /// Returns an error when a primitive batch cannot be prepared or rendered.
-    pub fn render(self, scenes: &[Scene]) -> crate::render::Result<()> {
+    pub fn render(self, scene: impl Into<Scene>) -> crate::render::Result<()> {
         let Self {
             device,
             queue,
@@ -154,7 +154,8 @@ impl Frame<'_> {
             ..
         } = self;
 
-        let mut prepared = renderer.prepare(viewport, scenes)?;
+        let scene = scene.into();
+        let mut prepared = renderer.prepare(viewport, &scene)?;
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("daub frame encoder"),
         });

@@ -1,5 +1,5 @@
 use daub::{
-    RendererConfig, Scene,
+    Layer, RendererConfig,
     color::Color,
     geometry::{LayoutValue, Point, Rectangle, Size},
     primitive::{CornerRadii, Quad, Text},
@@ -22,12 +22,12 @@ impl daub::winit::Application for Example {
             Size::new(LayoutValue::relative(0.7), LayoutValue::relative(0.5)),
         );
 
-        let mut scene = Scene::new(frame.bounds());
-        scene.push(
+        let mut layer = Layer::new(frame.bounds());
+        layer.push(
             Quad::new(card, Color::rgb(0.12, 0.16, 0.24))
                 .corner_radii(CornerRadii::uniform(LayoutValue::pixels(12.0))),
         );
-        scene.push(
+        layer.push(
             Text::new(
                 text_bounds,
                 "Hello from Daub and Glyphon 👋\n\nThis text wraps inside its rectangle, supports \
@@ -37,7 +37,7 @@ impl daub::winit::Application for Example {
             .font_size(28.0)
             .line_height(36.0),
         );
-        scene.push(
+        layer.push(
             Quad::new(
                 Rectangle::new(
                     Point::new(LayoutValue::relative(0.15), LayoutValue::relative(0.78)),
@@ -48,7 +48,7 @@ impl daub::winit::Application for Example {
             .corner_radii(CornerRadii::uniform(LayoutValue::pixels(2.0))),
         );
 
-        let result = frame.render(&[scene]);
+        let result = frame.render(layer);
         assert!(result.is_ok(), "{result:?}");
     }
 }

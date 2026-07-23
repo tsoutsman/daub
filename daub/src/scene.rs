@@ -10,17 +10,100 @@ use crate::{
     },
 };
 
-/// An ordered collection of drawing primitives.
+/// A strictly ordered collection of drawing [`Layer`]s.
 ///
-/// Consecutive primitives of the same type are stored together in a typed
-/// batch. Starting a batch for a different primitive type preserves submission
-/// order by creating a new batch.
+/// Every primitive in an earlier layer is rendered before every primitive in a
+/// later layer. Primitive submission order within a layer follows [`Layer`]'s
+/// type-batching rules.
+#[derive(Default)]
 pub struct Scene {
+    layers: Vec<Layer>,
+}
+
+impl Scene {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { layers: Vec::new() }
+    }
+
+    /// Appends a strict painter's-order layer.
+    pub fn push(&mut self, layer: Layer) {
+        self.layers.push(layer);
+    }
+
+    /// Appends strict painter's-order layers.
+    pub fn extend<I>(&mut self, layers: I)
+    where
+        I: IntoIterator<Item = Layer>,
+    {
+        self.layers.extend(layers);
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.layers.is_empty()
+    }
+
+    /// Returns the number of layers, including empty layers.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.layers.len()
+    }
+
+    #[must_use]
+    pub fn primitive_count(&self) -> usize {
+        self.layers.iter().map(Layer::len).sum()
+    }
+
+    pub fn clear(&mut self) {
+        self.layers.clear();
+    }
+
+    pub(crate) fn layers(&self) -> impl ExactSizeIterator<Item = &Layer> {
+        self.layers.iter()
+    }
+}
+
+impl<I> From<I> for Scene
+where
+    I: IntoIterator<Item = Layer>,
+{
+    fn from(layers: I) -> Self {
+        Self {
+            layers: layers.into_iter().collect(),
+        }
+    }
+}
+
+impl From<Layer> for Scene {
+    fn from(layer: Layer) -> Self {
+        Self::from([layer])
+    }
+}
+
+impl fmt::Debug for Scene {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Scene")
+            .field("layer_count", &self.len())
+            .field("primitive_count", &self.primitive_count())
+            .finish_non_exhaustive()
+    }
+}
+
+/// A clipped collection of primitives grouped by type.
+///
+/// A layer contains at most one batch for each primitive type. The first
+/// occurrence of a type establishes that batch's position relative to other
+/// types; later primitives of the same type join the existing batch regardless
+/// of intervening submissions. Same-type insertion order is preserved, while
+/// cross-type submission order after first occurrence is intentionally ignored.
+pub struct Layer {
     pub clip_bounds: Rectangle,
     batches: Vec<Box<dyn ErasedBatch>>,
 }
 
-impl Scene {
+impl Layer {
     #[must_use]
     pub const fn new(clip_bounds: Rectangle) -> Self {
         Self {
@@ -29,10 +112,11 @@ impl Scene {
         }
     }
 
-    /// Adds a primitive to the scene.
+    /// Adds a primitive to the layer.
     ///
-    /// The primitive is appended to the last batch when its type matches.
-    /// Otherwise, a new batch is started.
+    /// The primitive is appended to this layer's existing batch for its type.
+    /// A new batch is created at the end when the type has not appeared in the
+    /// layer before.
     pub fn push<P>(&mut self, primitive: P)
     where
         P: Primitive,
@@ -40,7 +124,7 @@ impl Scene {
         self.batch::<P>().push(primitive);
     }
 
-    /// Adds several primitives to one consecutive batch.
+    /// Adds several primitives to one type batch.
     ///
     /// An empty iterator does not create a batch.
     pub fn extend<P, I>(&mut self, primitives: I)
@@ -58,30 +142,30 @@ impl Scene {
         batch.extend(primitives);
     }
 
-    /// Returns a writer for the current batch of `P` primitives.
+    /// Returns a writer for this layer's batch of `P` primitives.
     ///
-    /// A new batch is started if the last batch contains another primitive
-    /// type. Holding the writer avoids a type-erased lookup for each push.
+    /// A new batch is created at the end if `P` has not appeared in the layer.
+    /// Holding the writer avoids a type-erased lookup for each push.
     #[expect(clippy::missing_panics_doc, reason = "see below")]
     pub fn batch<P>(&mut self) -> BatchWriter<'_, P>
     where
         P: Primitive,
     {
-        let can_reuse_last = self
+        let batch_index = self
             .batches
-            .last()
-            .is_some_and(|batch| batch.as_any().is::<TypedBatch<P>>());
-
-        if !can_reuse_last {
-            self.batches.push(Box::new(TypedBatch::<P>::new()));
-        }
+            .iter()
+            .position(|batch| batch.as_any().is::<TypedBatch<P>>())
+            .unwrap_or_else(|| {
+                self.batches.push(Box::new(TypedBatch::<P>::new()));
+                self.batches.len() - 1
+            });
 
         #[expect(clippy::expect_used, reason = "see below")]
         let batch = self
             .batches
-            .last_mut()
+            .get_mut(batch_index)
             .and_then(|batch| batch.as_any_mut().downcast_mut::<TypedBatch<P>>())
-            .expect("the last batch was just created or type-checked");
+            .expect("the batch was just created or type-checked");
 
         BatchWriter { batch }
     }
@@ -108,16 +192,12 @@ impl Scene {
     pub(crate) fn batches(&self) -> impl ExactSizeIterator<Item = &dyn ErasedBatch> {
         self.batches.iter().map(Box::as_ref)
     }
-
-    pub(crate) fn batches_mut(&mut self) -> impl ExactSizeIterator<Item = &mut dyn ErasedBatch> {
-        self.batches.iter_mut().map(Box::as_mut)
-    }
 }
 
-impl fmt::Debug for Scene {
+impl fmt::Debug for Layer {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("Scene")
+            .debug_struct("Layer")
             .field("clip_bounds", &self.clip_bounds)
             .field("len", &self.len())
             .field("batch_count", &self.batch_count())
@@ -125,7 +205,7 @@ impl fmt::Debug for Scene {
     }
 }
 
-/// A typed writer for one consecutive primitive batch.
+/// A typed writer for one layer-local primitive batch.
 pub struct BatchWriter<'a, P>
 where
     P: Primitive,
@@ -193,8 +273,6 @@ impl<P> TypedBatch<P> {
 }
 
 pub(crate) trait ErasedBatch: Any {
-    fn primitive_type_id(&self) -> TypeId;
-
     fn renderer_type_id(&self) -> TypeId;
 
     fn len(&self) -> usize;
@@ -220,10 +298,6 @@ impl<P> ErasedBatch for TypedBatch<P>
 where
     P: Primitive,
 {
-    fn primitive_type_id(&self) -> TypeId {
-        TypeId::of::<P>()
-    }
-
     fn renderer_type_id(&self) -> TypeId {
         TypeId::of::<P::Renderer>()
     }
@@ -258,18 +332,11 @@ impl dyn ErasedBatch + '_ {
     {
         self.as_any().downcast_ref()
     }
-
-    pub(crate) fn downcast_mut<P>(&mut self) -> Option<&mut TypedBatch<P>>
-    where
-        P: Primitive,
-    {
-        self.as_any_mut().downcast_mut()
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Scene;
+    use super::{Layer, Scene};
     use crate::{
         geometry::Rectangle,
         render::{Primitive, PrimitiveRenderer, RenderPipelineCache, RendererConfig},
@@ -334,19 +401,19 @@ mod tests {
     }
 
     #[test]
-    fn groups_consecutive_primitives() {
+    fn groups_interleaved_primitives_by_type() {
         let bounds = Rectangle::default();
-        let mut scene = Scene::new(bounds);
+        let mut layer = Layer::new(bounds);
 
-        scene.push(PrimitiveA(1));
-        scene.push(PrimitiveA(2));
-        scene.push(PrimitiveB);
-        scene.push(PrimitiveB);
+        layer.push(PrimitiveA(1));
+        layer.push(PrimitiveB);
+        layer.push(PrimitiveA(2));
+        layer.push(PrimitiveB);
 
-        assert_eq!(scene.len(), 4);
-        assert_eq!(scene.batch_count(), 2);
+        assert_eq!(layer.len(), 4);
+        assert_eq!(layer.batch_count(), 2);
 
-        let batches = scene.batches().collect::<Vec<_>>();
+        let batches = layer.batches().collect::<Vec<_>>();
         let Some(first) = batches[0].downcast_ref::<PrimitiveA>() else {
             std::process::abort();
         };
@@ -357,30 +424,74 @@ mod tests {
     }
 
     #[test]
-    fn preserves_interleaved_submission_order() {
+    fn type_order_follows_first_appearance() {
         let bounds = Rectangle::default();
-        let mut scene = Scene::new(bounds);
+        let mut layer = Layer::new(bounds);
 
-        scene.push(PrimitiveA(1));
-        scene.push(PrimitiveB);
-        scene.push(PrimitiveA(2));
+        layer.push(PrimitiveB);
+        layer.push(PrimitiveA(1));
+        layer.push(PrimitiveB);
 
-        assert_eq!(scene.len(), 3);
-        assert_eq!(scene.batch_count(), 3);
+        let batches = layer.batches().collect::<Vec<_>>();
+        assert!(batches[0].downcast_ref::<PrimitiveB>().is_some());
+        assert!(batches[1].downcast_ref::<PrimitiveA>().is_some());
+    }
 
-        let batches = scene.batches().collect::<Vec<_>>();
-        assert!(batches[0].downcast_ref::<PrimitiveA>().is_some());
-        assert!(batches[1].downcast_ref::<PrimitiveB>().is_some());
-        assert!(batches[2].downcast_ref::<PrimitiveA>().is_some());
+    #[test]
+    fn scene_preserves_layer_order() {
+        let mut first = Layer::new(Rectangle::default());
+        first.push(PrimitiveA(1));
+        let mut second = Layer::new(Rectangle::default());
+        second.push(PrimitiveB);
+        let mut scene = Scene::new();
+
+        scene.push(first);
+        scene.push(second);
+
+        assert_eq!(scene.len(), 2);
+        assert_eq!(scene.primitive_count(), 2);
+        let layers = scene.layers().collect::<Vec<_>>();
+        let Some(first_batch) = layers[0].batches().next() else {
+            std::process::abort();
+        };
+        let Some(second_batch) = layers[1].batches().next() else {
+            std::process::abort();
+        };
+        assert!(first_batch.downcast_ref::<PrimitiveA>().is_some());
+        assert!(second_batch.downcast_ref::<PrimitiveB>().is_some());
+    }
+
+    #[test]
+    fn scene_can_be_created_from_owned_layers() {
+        let mut first = Layer::new(Rectangle::default());
+        first.push(PrimitiveA(1));
+        let mut second = Layer::new(Rectangle::default());
+        second.push(PrimitiveB);
+
+        let scene = Scene::from([first, second]);
+
+        assert_eq!(scene.len(), 2);
+        assert_eq!(scene.primitive_count(), 2);
+    }
+
+    #[test]
+    fn scene_can_be_created_from_one_layer() {
+        let mut layer = Layer::new(Rectangle::default());
+        layer.push(PrimitiveA(1));
+
+        let scene = Scene::from(layer);
+
+        assert_eq!(scene.len(), 1);
+        assert_eq!(scene.primitive_count(), 1);
     }
 
     #[test]
     fn empty_extend_does_not_create_a_batch() {
-        let mut scene = Scene::new(Rectangle::default());
+        let mut layer = Layer::new(Rectangle::default());
 
-        scene.extend::<PrimitiveA, _>(std::iter::empty());
+        layer.extend::<PrimitiveA, _>(std::iter::empty());
 
-        assert!(scene.is_empty());
-        assert_eq!(scene.batch_count(), 0);
+        assert!(layer.is_empty());
+        assert_eq!(layer.batch_count(), 0);
     }
 }
