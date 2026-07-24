@@ -23,12 +23,13 @@ wgpu = "=30.0.0"
 wgpu = { version = "=30.0.0", features = ["noop"] }
 
 [features]
+image = []
 ocaml = ["dep:ocaml"]
 serde = ["dep:serde"]
 text = ["dep:glyphon"]
 winit = ["dep:pollster", "dep:winit"]
 
-default = []
+default = ["image", "ocaml", "serde", "text", "winit"]
 
 [[example]]
 name = "window"
@@ -37,6 +38,10 @@ required-features = ["winit"]
 [[example]]
 name = "text"
 required-features = ["text", "winit"]
+
+[[example]]
+name = "image"
+required-features = ["image", "winit"]
 
 [lints]
 workspace = true
